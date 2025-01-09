@@ -1,5 +1,7 @@
 #include <stdint.h>
 #include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <filesystem>
 #include <iostream>
 #include <format>
@@ -94,10 +96,10 @@ struct btrfs_tlv_header {
     uint16_t tlv_len;
 } __attribute__ ((__packed__));
 
-class formatted_error : public std::exception {
+class formatted_error : public exception {
 public:
     template<typename... Args>
-    formatted_error(format_string<Args...> s, Args&&... args) : msg(format(s, std::forward<Args>(args)...)) {
+    formatted_error(format_string<Args...> s, Args&&... args) : msg(format(s, forward<Args>(args)...)) {
     }
 
     const char* what() const noexcept {
@@ -105,8 +107,13 @@ public:
     }
 
 private:
-    std::string msg;
+    string msg;
 };
+
+static void parse(span<const uint8_t> sp) {
+    // FIXME - check header
+    // FIXME - loop through cmds
+}
 
 static void process(const filesystem::path& fn) {
     int ret;
@@ -116,10 +123,28 @@ static void process(const filesystem::path& fn) {
         throw formatted_error("open failed: {}", ret);
 
     unique_fd f{ret};
+    struct stat st;
 
-    // FIXME - mmap file
-    // FIXME - check header
-    // FIXME - loop through cmds
+    if (fstat(f.get(), &st))
+        throw formatted_error("fstat failed: {}", errno);
+
+    if (st.st_size < sizeof(btrfs_cmd_header))
+        throw formatted_error("file was too short ({} bytes, expected at least {})", st.st_size, sizeof(btrfs_cmd_header));
+
+    auto ptr = (uint8_t*)mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, f.get(), 0);
+    if (!ptr)
+        throw formatted_error("mmap failed: {}", errno);
+
+    auto sp = span(ptr, st.st_size);
+
+    try {
+        parse(sp);
+    } catch (...) {
+        munmap(sp.data(), sp.size());
+        throw;
+    }
+
+    munmap(sp.data(), sp.size());
 }
 
 int main() {

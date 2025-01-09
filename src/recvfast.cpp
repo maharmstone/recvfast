@@ -186,6 +186,98 @@ struct std::formatter<enum btrfs_send_cmd> {
     }
 };
 
+template<>
+struct std::formatter<enum btrfs_send_attr> {
+    constexpr auto parse(format_parse_context& ctx) {
+        auto it = ctx.begin();
+
+        if (it != ctx.end() && *it != '}')
+            throw format_error("invalid format");
+
+        return it;
+    }
+
+    template<typename format_context>
+    auto format(enum btrfs_send_attr a, format_context& ctx) const {
+        switch (a) {
+            case btrfs_send_attr::UNSPEC:
+                return format_to(ctx.out(), "unspec");
+            case btrfs_send_attr::UUID:
+                return format_to(ctx.out(), "uuid");
+            case btrfs_send_attr::CTRANSID:
+                return format_to(ctx.out(), "ctransid");
+            case btrfs_send_attr::INO:
+                return format_to(ctx.out(), "ino");
+            case btrfs_send_attr::SIZE:
+                return format_to(ctx.out(), "size");
+            case btrfs_send_attr::MODE:
+                return format_to(ctx.out(), "mode");
+            case btrfs_send_attr::UID:
+                return format_to(ctx.out(), "uid");
+            case btrfs_send_attr::GID:
+                return format_to(ctx.out(), "gid");
+            case btrfs_send_attr::RDEV:
+                return format_to(ctx.out(), "rdev");
+            case btrfs_send_attr::CTIME:
+                return format_to(ctx.out(), "ctime");
+            case btrfs_send_attr::MTIME:
+                return format_to(ctx.out(), "mtime");
+            case btrfs_send_attr::ATIME:
+                return format_to(ctx.out(), "atime");
+            case btrfs_send_attr::OTIME:
+                return format_to(ctx.out(), "otime");
+            case btrfs_send_attr::XATTR_NAME:
+                return format_to(ctx.out(), "xattr_name");
+            case btrfs_send_attr::XATTR_DATA:
+                return format_to(ctx.out(), "xattr_data");
+            case btrfs_send_attr::PATH:
+                return format_to(ctx.out(), "path");
+            case btrfs_send_attr::PATH_TO:
+                return format_to(ctx.out(), "path_to");
+            case btrfs_send_attr::PATH_LINK:
+                return format_to(ctx.out(), "path_link");
+            case btrfs_send_attr::FILE_OFFSET:
+                return format_to(ctx.out(), "file_offset");
+            case btrfs_send_attr::DATA:
+                return format_to(ctx.out(), "data");
+            case btrfs_send_attr::CLONE_UUID:
+                return format_to(ctx.out(), "clone_uuid");
+            case btrfs_send_attr::CLONE_CTRANSID:
+                return format_to(ctx.out(), "clone_ctransid");
+            case btrfs_send_attr::CLONE_PATH:
+                return format_to(ctx.out(), "clone_path");
+            case btrfs_send_attr::CLONE_OFFSET:
+                return format_to(ctx.out(), "clone_offset");
+            case btrfs_send_attr::CLONE_LEN:
+                return format_to(ctx.out(), "clone_len");
+            case btrfs_send_attr::FALLOCATE_MODE:
+                return format_to(ctx.out(), "fallocate_mode");
+            case btrfs_send_attr::FILEATTR:
+                return format_to(ctx.out(), "fileattr");
+            case btrfs_send_attr::UNENCODED_FILE_LEN:
+                return format_to(ctx.out(), "unencoded_file_len");
+            case btrfs_send_attr::UNENCODED_LEN:
+                return format_to(ctx.out(), "unencoded_len");
+            case btrfs_send_attr::UNENCODED_OFFSET:
+                return format_to(ctx.out(), "unencoded_offset");
+            case btrfs_send_attr::COMPRESSION:
+                return format_to(ctx.out(), "compression");
+            case btrfs_send_attr::ENCRYPTION:
+                return format_to(ctx.out(), "encryption");
+            case btrfs_send_attr::VERITY_ALGORITHM:
+                return format_to(ctx.out(), "verity_algorithm");
+            case btrfs_send_attr::VERITY_BLOCK_SIZE:
+                return format_to(ctx.out(), "verity_block_size");
+            case btrfs_send_attr::VERITY_SALT_DATA:
+                return format_to(ctx.out(), "verity_salt_data");
+            case btrfs_send_attr::VERITY_SIG_DATA:
+                return format_to(ctx.out(), "verity_sig_data");
+            default:
+                return format_to(ctx.out(), "{:x}", (uint16_t)a);
+        }
+    }
+};
+
 static void parse_atts(span<const uint8_t> sp) {
     while (!sp.empty()) {
         if (sp.size() < sizeof(btrfs_tlv_header))
@@ -196,7 +288,7 @@ static void parse_atts(span<const uint8_t> sp) {
         if (sp.size() < sizeof(btrfs_tlv_header) + h.tlv_len)
             throw runtime_error("Attribute overflow");
 
-        cout << format("  {}, {}\n", (unsigned int)h.tlv_type, h.tlv_len);
+        cout << format("  {}, {}\n", h.tlv_type, h.tlv_len);
 
         sp = sp.subspan(sizeof(btrfs_tlv_header) + h.tlv_len);
     }

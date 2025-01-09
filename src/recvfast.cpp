@@ -186,6 +186,22 @@ struct std::formatter<enum btrfs_send_cmd> {
     }
 };
 
+static void parse_atts(span<const uint8_t> sp) {
+    while (!sp.empty()) {
+        if (sp.size() < sizeof(btrfs_tlv_header))
+            throw runtime_error("Attribute overflow");
+
+        const auto& h = *(btrfs_tlv_header*)sp.data();
+
+        if (sp.size() < sizeof(btrfs_tlv_header) + h.tlv_len)
+            throw runtime_error("Attribute overflow");
+
+        cout << format("  {}, {}\n", (unsigned int)h.tlv_type, h.tlv_len);
+
+        sp = sp.subspan(sizeof(btrfs_tlv_header) + h.tlv_len);
+    }
+}
+
 static void parse(span<const uint8_t> sp) {
     const auto& h = *(btrfs_stream_header*)sp.data();
 
@@ -198,19 +214,23 @@ static void parse(span<const uint8_t> sp) {
 
     sp = sp.subspan(sizeof(btrfs_stream_header));
 
-    while (true) {
+    while (!sp.empty()) {
         if (sp.size() < sizeof(btrfs_cmd_header))
-            break;
+            throw runtime_error("Command exceeding bounds of file.");
 
         const auto& cmd = *(btrfs_cmd_header*)sp.data();
+
+        // FIXME - check CRC?
 
         cout << format("{}, {:x}, crc = {:08x}\n",
                        cmd.cmd, cmd.len, cmd.crc);
 
-        // FIXME - attributes
-
         if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))
-            break;
+            throw runtime_error("Command exceeding bounds of file.");
+
+        auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+
+        parse_atts(atts);
 
         sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
     }

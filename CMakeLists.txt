@@ -11,6 +11,8 @@ set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 
 add_executable(recvfast src/recvfast.cpp)
 
+target_compile_options(recvfast PUBLIC -Wall -Wextra)
+
 install(TARGETS recvfast
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
 )

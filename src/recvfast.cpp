@@ -1,6 +1,9 @@
 #include <stdint.h>
+#include <fcntl.h>
 #include <filesystem>
 #include <iostream>
+#include <format>
+#include "unique_fd.h"
 
 using namespace std;
 
@@ -91,8 +94,29 @@ struct btrfs_tlv_header {
     uint16_t tlv_len;
 } __attribute__ ((__packed__));
 
+class formatted_error : public std::exception {
+public:
+    template<typename... Args>
+    formatted_error(format_string<Args...> s, Args&&... args) : msg(format(s, std::forward<Args>(args)...)) {
+    }
+
+    const char* what() const noexcept {
+        return msg.c_str();
+    }
+
+private:
+    std::string msg;
+};
+
 static void process(const filesystem::path& fn) {
-    // FIXME - open file
+    int ret;
+
+    ret = open(fn.string().c_str(), O_RDONLY);
+    if (ret < 0)
+        throw formatted_error("open failed: {}", ret);
+
+    unique_fd f{ret};
+
     // FIXME - mmap file
     // FIXME - check header
     // FIXME - loop through cmds

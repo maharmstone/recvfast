@@ -288,7 +288,70 @@ static void parse_atts(span<const uint8_t> sp) {
         if (sp.size() < sizeof(btrfs_tlv_header) + h.tlv_len)
             throw runtime_error("Attribute overflow");
 
-        cout << format("  {}, {}\n", h.tlv_type, h.tlv_len);
+        switch (h.tlv_type) {
+            case btrfs_send_attr::CTRANSID:
+            case btrfs_send_attr::INO:
+            case btrfs_send_attr::SIZE:
+            case btrfs_send_attr::MODE:
+            case btrfs_send_attr::UID:
+            case btrfs_send_attr::GID:
+            case btrfs_send_attr::RDEV:
+            case btrfs_send_attr::FILE_OFFSET:
+            case btrfs_send_attr::CLONE_CTRANSID:
+            case btrfs_send_attr::CLONE_OFFSET:
+            case btrfs_send_attr::CLONE_LEN:
+            case btrfs_send_attr::FILEATTR:
+            case btrfs_send_attr::UNENCODED_FILE_LEN:
+            case btrfs_send_attr::UNENCODED_LEN:
+            case btrfs_send_attr::UNENCODED_OFFSET: {
+                if (h.tlv_len != sizeof(uint64_t))
+                    throw formatted_error("Length for {} was {}, expected {}", h.tlv_type, h.tlv_len, sizeof(uint64_t));
+
+                auto v = *(uint64_t*)(sp.data() + sizeof(btrfs_tlv_header));
+
+                cout << format("  {}: {}\n", h.tlv_type, v);
+                break;
+            }
+
+            case btrfs_send_attr::FALLOCATE_MODE:
+            case btrfs_send_attr::COMPRESSION:
+            case btrfs_send_attr::ENCRYPTION: {
+                if (h.tlv_len != sizeof(uint32_t))
+                    throw formatted_error("Length for {} was {}, expected {}", h.tlv_type, h.tlv_len, sizeof(uint32_t));
+
+                auto v = *(uint32_t*)(sp.data() + sizeof(btrfs_tlv_header));
+
+                cout << format("  {}: {}\n", h.tlv_type, v);
+                break;
+            }
+
+            case btrfs_send_attr::XATTR_NAME:
+            case btrfs_send_attr::XATTR_DATA:
+            case btrfs_send_attr::PATH:
+            case btrfs_send_attr::PATH_TO:
+            case btrfs_send_attr::PATH_LINK:
+            case btrfs_send_attr::CLONE_PATH: {
+                auto sv = string_view((char*)sp.data() + sizeof(btrfs_tlv_header), h.tlv_len);
+
+                cout << format("  {}: \"{}\"\n", h.tlv_type, sv);
+                break;
+            }
+
+            // FIXME - DATA
+            // FIXME - VERITY_ALGORITHM
+            // FIXME - VERITY_BLOCK_SIZE
+            // FIXME - VERITY_SALT_DATA
+            // FIXME - VERITY_SIG_DATA
+            // FIXME - CTIME
+            // FIXME - MTIME
+            // FIXME - ATIME
+            // FIXME - OTIME
+            // FIXME - UUID
+            // FIXME - CLONE_UUID
+
+            default:
+                cout << format("  {}, {}\n", h.tlv_type, h.tlv_len);
+        }
 
         sp = sp.subspan(sizeof(btrfs_tlv_header) + h.tlv_len);
     }
@@ -343,7 +406,7 @@ static void process(const filesystem::path& fn) {
     if (fstat(f.get(), &st))
         throw formatted_error("fstat failed: {}", errno);
 
-    if (st.st_size < sizeof(btrfs_cmd_header))
+    if ((uint64_t)st.st_size < sizeof(btrfs_cmd_header))
         throw formatted_error("file was too short ({} bytes, expected at least {})", st.st_size, sizeof(btrfs_cmd_header));
 
     auto ptr = (uint8_t*)mmap(nullptr, st.st_size, PROT_READ, MAP_SHARED, f.get(), 0);

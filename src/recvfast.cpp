@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <fcntl.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <filesystem>
@@ -9,7 +10,8 @@
 
 using namespace std;
 
-#define BTRFS_SEND_STREAM_MAGIC "btrfs-stream"
+static const char BTRFS_SEND_STREAM_MAGIC[] = "btrfs-stream";
+static const uint32_t BTRFS_SEND_STREAM_VERSION = 3;
 
 struct btrfs_stream_header {
     char magic[sizeof(BTRFS_SEND_STREAM_MAGIC)];
@@ -111,7 +113,17 @@ private:
 };
 
 static void parse(span<const uint8_t> sp) {
-    // FIXME - check header
+    const auto& h = *(btrfs_stream_header*)sp.data();
+
+    if (strcmp(h.magic, BTRFS_SEND_STREAM_MAGIC))
+        throw runtime_error("Not a stream file.");
+
+    if (h.version > BTRFS_SEND_STREAM_VERSION)
+        throw formatted_error("Stream was version {}, only streams up to version {} supported.",
+                              h.version, BTRFS_SEND_STREAM_VERSION);
+
+    sp = sp.subspan(sizeof(btrfs_stream_header));
+
     // FIXME - loop through cmds
 }
 

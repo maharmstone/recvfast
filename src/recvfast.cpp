@@ -112,6 +112,80 @@ private:
     string msg;
 };
 
+template<>
+struct std::formatter<enum btrfs_send_cmd> {
+    constexpr auto parse(format_parse_context& ctx) {
+        auto it = ctx.begin();
+
+        if (it != ctx.end() && *it != '}')
+            throw format_error("invalid format");
+
+        return it;
+    }
+
+    template<typename format_context>
+    auto format(enum btrfs_send_cmd c, format_context& ctx) const {
+        switch (c) {
+            case btrfs_send_cmd::UNSPEC:
+                return std::format_to(ctx.out(), "UNSPEC");
+            case btrfs_send_cmd::SUBVOL:
+                return std::format_to(ctx.out(), "SUBVOL");
+            case btrfs_send_cmd::SNAPSHOT:
+                return std::format_to(ctx.out(), "SNAPSHOT");
+            case btrfs_send_cmd::MKFILE:
+                return std::format_to(ctx.out(), "MKFILE");
+            case btrfs_send_cmd::MKDIR:
+                return std::format_to(ctx.out(), "MKDIR");
+            case btrfs_send_cmd::MKNOD:
+                return std::format_to(ctx.out(), "MKNOD");
+            case btrfs_send_cmd::MKFIFO:
+                return std::format_to(ctx.out(), "MKFIFO");
+            case btrfs_send_cmd::MKSOCK:
+                return std::format_to(ctx.out(), "MKSOCK");
+            case btrfs_send_cmd::SYMLINK:
+                return std::format_to(ctx.out(), "SYMLINK");
+            case btrfs_send_cmd::RENAME:
+                return std::format_to(ctx.out(), "RENAME");
+            case btrfs_send_cmd::LINK:
+                return std::format_to(ctx.out(), "LINK");
+            case btrfs_send_cmd::UNLINK:
+                return std::format_to(ctx.out(), "UNLINK");
+            case btrfs_send_cmd::RMDIR:
+                return std::format_to(ctx.out(), "RMDIR");
+            case btrfs_send_cmd::SET_XATTR:
+                return std::format_to(ctx.out(), "SET_XATTR");
+            case btrfs_send_cmd::REMOVE_XATTR:
+                return std::format_to(ctx.out(), "REMOVE_XATTR");
+            case btrfs_send_cmd::WRITE:
+                return std::format_to(ctx.out(), "WRITE");
+            case btrfs_send_cmd::CLONE:
+                return std::format_to(ctx.out(), "CLONE");
+            case btrfs_send_cmd::TRUNCATE:
+                return std::format_to(ctx.out(), "TRUNCATE");
+            case btrfs_send_cmd::CHMOD:
+                return std::format_to(ctx.out(), "CHMOD");
+            case btrfs_send_cmd::CHOWN:
+                return std::format_to(ctx.out(), "CHOWN");
+            case btrfs_send_cmd::UTIMES:
+                return std::format_to(ctx.out(), "UTIMES");
+            case btrfs_send_cmd::END:
+                return std::format_to(ctx.out(), "END");
+            case btrfs_send_cmd::UPDATE_EXTENT:
+                return std::format_to(ctx.out(), "UPDATE_EXTENT");
+            case btrfs_send_cmd::FALLOCATE:
+                return std::format_to(ctx.out(), "FALLOCATE");
+            case btrfs_send_cmd::FILEATTR:
+                return std::format_to(ctx.out(), "FILEATTR");
+            case btrfs_send_cmd::ENCODED_WRITE:
+                return std::format_to(ctx.out(), "ENCODED_WRITE");
+            case btrfs_send_cmd::ENABLE_VERITY:
+                return std::format_to(ctx.out(), "ENABLE_VERITY");
+            default:
+                return std::format_to(ctx.out(), "{:x}", (uint16_t)c);
+        }
+    }
+};
+
 static void parse(span<const uint8_t> sp) {
     const auto& h = *(btrfs_stream_header*)sp.data();
 
@@ -123,6 +197,23 @@ static void parse(span<const uint8_t> sp) {
                               h.version, BTRFS_SEND_STREAM_VERSION);
 
     sp = sp.subspan(sizeof(btrfs_stream_header));
+
+    while (true) {
+        if (sp.size() < sizeof(btrfs_cmd_header))
+            break;
+
+        const auto& cmd = *(btrfs_cmd_header*)sp.data();
+
+        cout << format("{}, {:x}, crc = {:08x}\n",
+                       cmd.cmd, cmd.len, cmd.crc);
+
+        // FIXME - attributes
+
+        if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))
+            break;
+
+        sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
+    }
 
     // FIXME - loop through cmds
 }

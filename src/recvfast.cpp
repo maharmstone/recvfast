@@ -127,61 +127,61 @@ struct std::formatter<enum btrfs_send_cmd> {
     auto format(enum btrfs_send_cmd c, format_context& ctx) const {
         switch (c) {
             case btrfs_send_cmd::UNSPEC:
-                return std::format_to(ctx.out(), "unspec");
+                return format_to(ctx.out(), "unspec");
             case btrfs_send_cmd::SUBVOL:
-                return std::format_to(ctx.out(), "subvol");
+                return format_to(ctx.out(), "subvol");
             case btrfs_send_cmd::SNAPSHOT:
-                return std::format_to(ctx.out(), "snapshot");
+                return format_to(ctx.out(), "snapshot");
             case btrfs_send_cmd::MKFILE:
-                return std::format_to(ctx.out(), "mkfile");
+                return format_to(ctx.out(), "mkfile");
             case btrfs_send_cmd::MKDIR:
-                return std::format_to(ctx.out(), "mkdir");
+                return format_to(ctx.out(), "mkdir");
             case btrfs_send_cmd::MKNOD:
-                return std::format_to(ctx.out(), "mknod");
+                return format_to(ctx.out(), "mknod");
             case btrfs_send_cmd::MKFIFO:
-                return std::format_to(ctx.out(), "mkfifo");
+                return format_to(ctx.out(), "mkfifo");
             case btrfs_send_cmd::MKSOCK:
-                return std::format_to(ctx.out(), "mksock");
+                return format_to(ctx.out(), "mksock");
             case btrfs_send_cmd::SYMLINK:
-                return std::format_to(ctx.out(), "symlink");
+                return format_to(ctx.out(), "symlink");
             case btrfs_send_cmd::RENAME:
-                return std::format_to(ctx.out(), "rename");
+                return format_to(ctx.out(), "rename");
             case btrfs_send_cmd::LINK:
-                return std::format_to(ctx.out(), "link");
+                return format_to(ctx.out(), "link");
             case btrfs_send_cmd::UNLINK:
-                return std::format_to(ctx.out(), "unlink");
+                return format_to(ctx.out(), "unlink");
             case btrfs_send_cmd::RMDIR:
-                return std::format_to(ctx.out(), "rmdir");
+                return format_to(ctx.out(), "rmdir");
             case btrfs_send_cmd::SET_XATTR:
-                return std::format_to(ctx.out(), "set_xattr");
+                return format_to(ctx.out(), "set_xattr");
             case btrfs_send_cmd::REMOVE_XATTR:
-                return std::format_to(ctx.out(), "remove_xattr");
+                return format_to(ctx.out(), "remove_xattr");
             case btrfs_send_cmd::WRITE:
-                return std::format_to(ctx.out(), "write");
+                return format_to(ctx.out(), "write");
             case btrfs_send_cmd::CLONE:
-                return std::format_to(ctx.out(), "clone");
+                return format_to(ctx.out(), "clone");
             case btrfs_send_cmd::TRUNCATE:
-                return std::format_to(ctx.out(), "truncate");
+                return format_to(ctx.out(), "truncate");
             case btrfs_send_cmd::CHMOD:
-                return std::format_to(ctx.out(), "chmod");
+                return format_to(ctx.out(), "chmod");
             case btrfs_send_cmd::CHOWN:
-                return std::format_to(ctx.out(), "chown");
+                return format_to(ctx.out(), "chown");
             case btrfs_send_cmd::UTIMES:
-                return std::format_to(ctx.out(), "utimes");
+                return format_to(ctx.out(), "utimes");
             case btrfs_send_cmd::END:
-                return std::format_to(ctx.out(), "end");
+                return format_to(ctx.out(), "end");
             case btrfs_send_cmd::UPDATE_EXTENT:
-                return std::format_to(ctx.out(), "update_extent");
+                return format_to(ctx.out(), "update_extent");
             case btrfs_send_cmd::FALLOCATE:
-                return std::format_to(ctx.out(), "fallocate");
+                return format_to(ctx.out(), "fallocate");
             case btrfs_send_cmd::FILEATTR:
-                return std::format_to(ctx.out(), "fileattr");
+                return format_to(ctx.out(), "fileattr");
             case btrfs_send_cmd::ENCODED_WRITE:
-                return std::format_to(ctx.out(), "encoded_write");
+                return format_to(ctx.out(), "encoded_write");
             case btrfs_send_cmd::ENABLE_VERITY:
-                return std::format_to(ctx.out(), "enable_verity");
+                return format_to(ctx.out(), "enable_verity");
             default:
-                return std::format_to(ctx.out(), "{:x}", (uint16_t)c);
+                return format_to(ctx.out(), "{:x}", (uint16_t)c);
         }
     }
 };

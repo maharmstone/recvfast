@@ -6,12 +6,15 @@
 #include <filesystem>
 #include <iostream>
 #include <format>
+#include <liburing.h>
 #include "unique_fd.h"
 
 using namespace std;
 
 static const char BTRFS_SEND_STREAM_MAGIC[] = "btrfs-stream";
 static const uint32_t BTRFS_SEND_STREAM_VERSION = 3;
+
+static const unsigned int QUEUE_DEPTH = 256; // FIXME?
 
 struct btrfs_stream_header {
     char magic[sizeof(BTRFS_SEND_STREAM_MAGIC)];
@@ -369,28 +372,37 @@ static void parse(span<const uint8_t> sp) {
 
     sp = sp.subspan(sizeof(btrfs_stream_header));
 
-    while (!sp.empty()) {
-        if (sp.size() < sizeof(btrfs_cmd_header))
-            throw runtime_error("Command exceeding bounds of file.");
+    struct io_uring ring;
 
-        const auto& cmd = *(btrfs_cmd_header*)sp.data();
+    if (auto ret = io_uring_queue_init(QUEUE_DEPTH, &ring, 0); ret)
+        throw formatted_error("io_uring_queue_init failed: {}", ret);
 
-        // FIXME - check CRC?
+    try {
+        while (!sp.empty()) {
+            if (sp.size() < sizeof(btrfs_cmd_header))
+                throw runtime_error("Command exceeding bounds of file.");
 
-        cout << format("{}, {:x}, {:08x}\n",
-                       cmd.cmd, cmd.len, cmd.crc);
+            const auto& cmd = *(btrfs_cmd_header*)sp.data();
 
-        if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))
-            throw runtime_error("Command exceeding bounds of file.");
+            // FIXME - check CRC?
 
-        auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+            cout << format("{}, {:x}, {:08x}\n", cmd.cmd, cmd.len, cmd.crc);
 
-        parse_atts(atts);
+            if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))
+                throw runtime_error("Command exceeding bounds of file.");
 
-        sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
+            auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+
+            parse_atts(atts);
+
+            sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
+        }
+    } catch (...) {
+        io_uring_queue_exit(&ring);
+        throw;
     }
 
-    // FIXME - loop through cmds
+    io_uring_queue_exit(&ring);
 }
 
 static void process(const filesystem::path& fn) {

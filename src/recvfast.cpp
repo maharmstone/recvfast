@@ -222,7 +222,7 @@ static void parse(span<const uint8_t> sp) {
 
         // FIXME - check CRC?
 
-        cout << format("{}, {:x}, crc = {:08x}\n",
+        cout << format("{}, {:x}, {:08x}\n",
                        cmd.cmd, cmd.len, cmd.crc);
 
         if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))

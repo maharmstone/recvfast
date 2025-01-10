@@ -281,7 +281,9 @@ struct std::formatter<enum btrfs_send_attr> {
     }
 };
 
-static void parse_atts(span<const uint8_t> sp) {
+// FIXME - invocable concept for func
+template<typename T>
+static void parse_atts(span<const uint8_t> sp, const T& func) {
     while (!sp.empty()) {
         if (sp.size() < sizeof(btrfs_tlv_header))
             throw runtime_error("Attribute overflow");
@@ -312,7 +314,7 @@ static void parse_atts(span<const uint8_t> sp) {
 
                 auto v = *(uint64_t*)(sp.data() + sizeof(btrfs_tlv_header));
 
-                cout << format("  {}: {}\n", h.tlv_type, v);
+                func(h.tlv_type, v);
                 break;
             }
 
@@ -324,7 +326,7 @@ static void parse_atts(span<const uint8_t> sp) {
 
                 auto v = *(uint32_t*)(sp.data() + sizeof(btrfs_tlv_header));
 
-                cout << format("  {}: {}\n", h.tlv_type, v);
+                func(h.tlv_type, v);
                 break;
             }
 
@@ -336,7 +338,7 @@ static void parse_atts(span<const uint8_t> sp) {
             case btrfs_send_attr::CLONE_PATH: {
                 auto sv = string_view((char*)sp.data() + sizeof(btrfs_tlv_header), h.tlv_len);
 
-                cout << format("  {}: \"{}\"\n", h.tlv_type, sv);
+                func(h.tlv_type, sv);
                 break;
             }
 
@@ -353,7 +355,8 @@ static void parse_atts(span<const uint8_t> sp) {
             // FIXME - CLONE_UUID
 
             default:
-                cout << format("  {}, {}\n", h.tlv_type, h.tlv_len);
+                // cout << format("  {}, {}\n", h.tlv_type, h.tlv_len);
+                break;
         }
 
         sp = sp.subspan(sizeof(btrfs_tlv_header) + h.tlv_len);
@@ -393,7 +396,12 @@ static void parse(span<const uint8_t> sp) {
 
             auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
 
-            parse_atts(atts);
+            parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
+                if constexpr (is_same_v<T, string_view>)
+                    cout << format("  {}: \"{}\"\n", attr, v);
+                else
+                    cout << format("  {}: {}\n", attr, v);
+            });
 
             sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
         }

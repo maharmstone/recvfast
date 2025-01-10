@@ -16,6 +16,8 @@ static const uint32_t BTRFS_SEND_STREAM_VERSION = 3;
 
 static const unsigned int QUEUE_DEPTH = 256; // FIXME?
 
+static unsigned int items_pending;
+
 struct btrfs_stream_header {
     char magic[sizeof(BTRFS_SEND_STREAM_MAGIC)];
     uint32_t version;
@@ -382,8 +384,27 @@ static void do_mkdir(io_uring& ring, span<const uint8_t> atts) {
     // FIXME - mode
     // FIXME - linking
 
+    // FIXME - error reporting
+
     io_uring_prep_mkdir(sqe, path.value().c_str(), 0644);
+    items_pending++;
     io_uring_submit(&ring);
+}
+
+static void do_wait(io_uring& ring) {
+    while (items_pending > 0) {
+        io_uring_cqe* cqe;
+
+        auto ret = io_uring_wait_cqe(&ring, &cqe);
+        if (ret < 0)
+            throw formatted_error("io_uring_wait_cqe failed: {}", ret);
+
+        cout << format("res = {}\n", cqe->res);
+
+        // FIXME - throw error if cqe->res < 0
+
+        items_pending--;
+    }
 }
 
 static void parse(span<const uint8_t> sp) {
@@ -448,6 +469,8 @@ static void parse(span<const uint8_t> sp) {
         io_uring_queue_exit(&ring);
         throw;
     }
+
+    do_wait(ring);
 
     io_uring_queue_exit(&ring);
 }

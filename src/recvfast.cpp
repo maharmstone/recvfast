@@ -363,6 +363,29 @@ static void parse_atts(span<const uint8_t> sp, const T& func) {
     }
 }
 
+static void do_mkdir(io_uring& ring, span<const uint8_t> atts) {
+    optional<string> path;
+
+    parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+        if constexpr (is_same_v<T, string_view>) {
+            if (attr == btrfs_send_attr::PATH)
+                path = v;
+        }
+    });
+
+    if (!path.has_value())
+        throw formatted_error("mkdir cmd without path");
+
+    auto sqe = io_uring_get_sqe(&ring);
+    // FIXME - if sqe is NULL, wait
+
+    // FIXME - mode
+    // FIXME - linking
+
+    io_uring_prep_mkdir(sqe, path.value().c_str(), 0644);
+    io_uring_submit(&ring);
+}
+
 static void parse(span<const uint8_t> sp) {
     const auto& h = *(btrfs_stream_header*)sp.data();
 
@@ -373,9 +396,16 @@ static void parse(span<const uint8_t> sp) {
         throw formatted_error("Stream was version {}, only streams up to version {} supported.",
                               h.version, BTRFS_SEND_STREAM_VERSION);
 
+    // TESTING
+    auto dir = to_string(time(nullptr));
+    if (!filesystem::create_directory(dir))
+        throw formatted_error("failed to create directory {}", dir);
+
+    // FIXME - chdir?
+
     sp = sp.subspan(sizeof(btrfs_stream_header));
 
-    struct io_uring ring;
+    io_uring ring;
 
     if (auto ret = io_uring_queue_init(QUEUE_DEPTH, &ring, 0); ret)
         throw formatted_error("io_uring_queue_init failed: {}", ret);
@@ -389,19 +419,28 @@ static void parse(span<const uint8_t> sp) {
 
             // FIXME - check CRC?
 
-            cout << format("{}, {:x}, {:08x}\n", cmd.cmd, cmd.len, cmd.crc);
 
             if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))
                 throw runtime_error("Command exceeding bounds of file.");
 
             auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
 
-            parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
-                if constexpr (is_same_v<T, string_view>)
-                    cout << format("  {}: \"{}\"\n", attr, v);
-                else
-                    cout << format("  {}: {}\n", attr, v);
-            });
+            switch (cmd.cmd) {
+                case btrfs_send_cmd::MKDIR:
+                    do_mkdir(ring, atts);
+                    break;
+
+                default:
+                    cout << format("{}, {:x}, {:08x}\n", cmd.cmd, cmd.len, cmd.crc);
+
+                    parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
+                        if constexpr (is_same_v<T, string_view>)
+                            cout << format("  {}: \"{}\"\n", attr, v);
+                        else
+                            cout << format("  {}: {}\n", attr, v);
+                    });
+                    break;
+            }
 
             sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
         }

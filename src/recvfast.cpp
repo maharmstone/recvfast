@@ -437,9 +437,16 @@ static void process(const filesystem::path& fn) {
     munmap(sp.data(), sp.size());
 }
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc < 2) {
+        cerr << "Usage: recvfast <stream>" << endl;
+        return 1;
+    }
+
+    const char* fn = argv[1];
+
     try {
-        process("/home/hellas/Desktop/work/stream/stream");
+        process(fn);
     } catch (const exception& e) {
         cerr << "Exception: " << e.what() << endl;
     }

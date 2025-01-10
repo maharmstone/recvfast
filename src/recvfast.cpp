@@ -434,6 +434,52 @@ static void do_wait(io_uring& ring) {
     }
 }
 
+template<unsigned N>
+static void do_pass(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+    while (!sp.empty()) {
+        if (sp.size() < sizeof(btrfs_cmd_header))
+            throw runtime_error("Command exceeding bounds of file.");
+
+        const auto& cmd = *(btrfs_cmd_header*)sp.data();
+
+        // FIXME - check CRC?
+
+        if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))
+            throw runtime_error("Command exceeding bounds of file.");
+
+        auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+
+        switch (cmd.cmd) {
+            case btrfs_send_cmd::MKDIR:
+                if constexpr (N == 0)
+                    do_mkdir(ring, dirfd, atts);
+                break;
+
+            case btrfs_send_cmd::RENAME:
+                if constexpr (N == 1)
+                    do_rename(ring, dirfd, atts);
+                break;
+
+            default:
+                if constexpr (N == 0) {
+                    cout << format("{}, {:x}, {:08x}\n", cmd.cmd, cmd.len, cmd.crc);
+
+                    parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
+                        if constexpr (is_same_v<T, string_view>)
+                            cout << format("  {}: \"{}\"\n", attr, v);
+                        else
+                            cout << format("  {}: {}\n", attr, v);
+                    });
+                }
+                break;
+        }
+
+        sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
+    }
+
+    do_wait(ring);
+}
+
 static void parse(span<const uint8_t> sp) {
     const auto& h = *(btrfs_stream_header*)sp.data();
 
@@ -466,49 +512,12 @@ static void parse(span<const uint8_t> sp) {
         throw formatted_error("io_uring_queue_init failed: {}", ret);
 
     try {
-        while (!sp.empty()) {
-            if (sp.size() < sizeof(btrfs_cmd_header))
-                throw runtime_error("Command exceeding bounds of file.");
-
-            const auto& cmd = *(btrfs_cmd_header*)sp.data();
-
-            // FIXME - check CRC?
-
-
-            if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))
-                throw runtime_error("Command exceeding bounds of file.");
-
-            auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
-
-            switch (cmd.cmd) {
-                case btrfs_send_cmd::MKDIR:
-                    do_mkdir(ring, dirfd.get(), atts);
-                    break;
-
-                case btrfs_send_cmd::RENAME:
-                    do_rename(ring, dirfd.get(), atts);
-                    break;
-
-                default:
-                    cout << format("{}, {:x}, {:08x}\n", cmd.cmd, cmd.len, cmd.crc);
-
-                    parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
-                        if constexpr (is_same_v<T, string_view>)
-                            cout << format("  {}: \"{}\"\n", attr, v);
-                        else
-                            cout << format("  {}: {}\n", attr, v);
-                    });
-                    break;
-            }
-
-            sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
-        }
+        do_pass<0>(ring, dirfd.get(), sp);
+        do_pass<1>(ring, dirfd.get(), sp);
     } catch (...) {
         io_uring_queue_exit(&ring);
         throw;
     }
-
-    do_wait(ring);
 
     io_uring_queue_exit(&ring);
 }

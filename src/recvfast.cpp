@@ -399,9 +399,9 @@ static void do_wait(io_uring& ring) {
         if (ret < 0)
             throw formatted_error("io_uring_wait_cqe failed: {}", ret);
 
-        cout << format("res = {}\n", cqe->res);
-
-        // FIXME - throw error if cqe->res < 0
+        // FIXME - which operation exactly?
+        if (cqe->res < 0)
+            throw formatted_error("operation failed: {}", cqe->res);
 
         items_pending--;
     }

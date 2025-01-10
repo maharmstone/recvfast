@@ -365,7 +365,7 @@ static void parse_atts(span<const uint8_t> sp, const T& func) {
     }
 }
 
-static void do_mkdir(io_uring& ring, span<const uint8_t> atts) {
+static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     optional<string> path;
 
     parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
@@ -386,7 +386,7 @@ static void do_mkdir(io_uring& ring, span<const uint8_t> atts) {
 
     // FIXME - error reporting
 
-    io_uring_prep_mkdir(sqe, path.value().c_str(), 0644);
+    io_uring_prep_mkdirat(sqe, dirfd, path.value().c_str(), 0644);
     items_pending++;
     io_uring_submit(&ring);
 }
@@ -422,6 +422,13 @@ static void parse(span<const uint8_t> sp) {
     if (!filesystem::create_directory(dir))
         throw formatted_error("failed to create directory {}", dir);
 
+    unique_fd dirfd;
+
+    if (auto ret = open(dir.c_str(), O_RDONLY); ret < 0)
+        throw formatted_error("open failed: {}", ret);
+    else
+        dirfd.reset(ret);
+
     // FIXME - chdir?
 
     sp = sp.subspan(sizeof(btrfs_stream_header));
@@ -448,7 +455,7 @@ static void parse(span<const uint8_t> sp) {
 
             switch (cmd.cmd) {
                 case btrfs_send_cmd::MKDIR:
-                    do_mkdir(ring, atts);
+                    do_mkdir(ring, dirfd.get(), atts);
                     break;
 
                 default:

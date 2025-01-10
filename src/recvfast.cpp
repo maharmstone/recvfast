@@ -502,8 +502,6 @@ static void parse(span<const uint8_t> sp) {
     else
         dirfd.reset(ret);
 
-    // FIXME - chdir?
-
     sp = sp.subspan(sizeof(btrfs_stream_header));
 
     io_uring ring;

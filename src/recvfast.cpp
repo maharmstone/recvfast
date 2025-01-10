@@ -384,9 +384,36 @@ static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     // FIXME - mode
     // FIXME - linking
 
-    // FIXME - error reporting
-
     io_uring_prep_mkdirat(sqe, dirfd, path.value().c_str(), 0644);
+    items_pending++;
+    io_uring_submit(&ring);
+}
+
+static void do_rename(io_uring& ring, int dirfd, span<const uint8_t> atts) {
+    optional<string> path, path_to;
+
+    parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+        if constexpr (is_same_v<T, string_view>) {
+            if (attr == btrfs_send_attr::PATH)
+                path = v;
+            else if (attr == btrfs_send_attr::PATH_TO)
+                path_to = v;
+        }
+    });
+
+    if (!path.has_value())
+        throw formatted_error("rename cmd without path");
+
+    if (!path_to.has_value())
+        throw formatted_error("rename cmd without path_to");
+
+    auto sqe = io_uring_get_sqe(&ring);
+    // FIXME - if sqe is NULL, wait
+
+    // FIXME - linking
+
+    io_uring_prep_renameat(sqe, dirfd, path.value().c_str(), dirfd,
+                           path_to.value().c_str(), 0);
     items_pending++;
     io_uring_submit(&ring);
 }
@@ -456,6 +483,10 @@ static void parse(span<const uint8_t> sp) {
             switch (cmd.cmd) {
                 case btrfs_send_cmd::MKDIR:
                     do_mkdir(ring, dirfd.get(), atts);
+                    break;
+
+                case btrfs_send_cmd::RENAME:
+                    do_rename(ring, dirfd.get(), atts);
                     break;
 
                 default:

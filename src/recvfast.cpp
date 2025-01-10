@@ -389,35 +389,6 @@ static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     io_uring_submit(&ring);
 }
 
-static void do_rename(io_uring& ring, int dirfd, span<const uint8_t> atts) {
-    optional<string> path, path_to;
-
-    parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
-        if constexpr (is_same_v<T, string_view>) {
-            if (attr == btrfs_send_attr::PATH)
-                path = v;
-            else if (attr == btrfs_send_attr::PATH_TO)
-                path_to = v;
-        }
-    });
-
-    if (!path.has_value())
-        throw formatted_error("rename cmd without path");
-
-    if (!path_to.has_value())
-        throw formatted_error("rename cmd without path_to");
-
-    auto sqe = io_uring_get_sqe(&ring);
-    // FIXME - if sqe is NULL, wait
-
-    // FIXME - linking
-
-    io_uring_prep_renameat(sqe, dirfd, path.value().c_str(), dirfd,
-                           path_to.value().c_str(), 0);
-    items_pending++;
-    io_uring_submit(&ring);
-}
-
 static void do_wait(io_uring& ring) {
     while (items_pending > 0) {
         io_uring_cqe* cqe;
@@ -434,8 +405,7 @@ static void do_wait(io_uring& ring) {
     }
 }
 
-template<unsigned N>
-static void do_pass(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
     while (!sp.empty()) {
         if (sp.size() < sizeof(btrfs_cmd_header))
             throw runtime_error("Command exceeding bounds of file.");
@@ -451,27 +421,61 @@ static void do_pass(io_uring& ring, int dirfd, span<const uint8_t> sp) {
 
         switch (cmd.cmd) {
             case btrfs_send_cmd::MKDIR:
-                if constexpr (N == 0)
-                    do_mkdir(ring, dirfd, atts);
+                do_mkdir(ring, dirfd, atts);
                 break;
 
             case btrfs_send_cmd::RENAME:
-                if constexpr (N == 1)
-                    do_rename(ring, dirfd, atts);
                 break;
 
             default:
-                if constexpr (N == 0) {
-                    cout << format("{}, {:x}, {:08x}\n", cmd.cmd, cmd.len, cmd.crc);
+                cout << format("{}, {:x}, {:08x}\n", cmd.cmd, cmd.len, cmd.crc);
 
-                    parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
-                        if constexpr (is_same_v<T, string_view>)
-                            cout << format("  {}: \"{}\"\n", attr, v);
-                        else
-                            cout << format("  {}: {}\n", attr, v);
-                    });
-                }
+                parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
+                    if constexpr (is_same_v<T, string_view>)
+                        cout << format("  {}: \"{}\"\n", attr, v);
+                    else
+                        cout << format("  {}: {}\n", attr, v);
+                });
                 break;
+        }
+
+        sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
+    }
+
+    do_wait(ring);
+}
+
+static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+    while (!sp.empty()) {
+        const auto& cmd = *(btrfs_cmd_header*)sp.data();
+
+        auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+
+        if (cmd.cmd == btrfs_send_cmd::RENAME) {
+            optional<string> path, path_to;
+
+            parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+                if constexpr (is_same_v<T, string_view>) {
+                    if (attr == btrfs_send_attr::PATH)
+                        path = v;
+                    else if (attr == btrfs_send_attr::PATH_TO)
+                        path_to = v;
+                }
+            });
+
+            if (!path.has_value())
+                throw formatted_error("rename cmd without path");
+
+            if (!path_to.has_value())
+                throw formatted_error("rename cmd without path_to");
+
+            auto sqe = io_uring_get_sqe(&ring);
+            // FIXME - if sqe is NULL, wait
+
+            io_uring_prep_renameat(sqe, dirfd, path.value().c_str(), dirfd,
+                                   path_to.value().c_str(), 0);
+            items_pending++;
+            io_uring_submit(&ring);
         }
 
         sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
@@ -510,8 +514,8 @@ static void parse(span<const uint8_t> sp) {
         throw formatted_error("io_uring_queue_init failed: {}", ret);
 
     try {
-        do_pass<0>(ring, dirfd.get(), sp);
-        do_pass<1>(ring, dirfd.get(), sp);
+        create_files(ring, dirfd.get(), sp);
+        do_renames(ring, dirfd.get(), sp);
     } catch (...) {
         io_uring_queue_exit(&ring);
         throw;

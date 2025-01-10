@@ -445,43 +445,74 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
     do_wait(ring);
 }
 
-static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
-    while (!sp.empty()) {
-        const auto& cmd = *(btrfs_cmd_header*)sp.data();
+static unsigned int count_path_to_slashes(span<const uint8_t> atts) {
+    unsigned int ret = 0;
 
-        auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
-
-        if (cmd.cmd == btrfs_send_cmd::RENAME) {
-            optional<string> path, path_to;
-
-            parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
-                if constexpr (is_same_v<T, string_view>) {
-                    if (attr == btrfs_send_attr::PATH)
-                        path = v;
-                    else if (attr == btrfs_send_attr::PATH_TO)
-                        path_to = v;
+    parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+        if constexpr (is_same_v<T, string_view>) {
+            if (attr == btrfs_send_attr::PATH_TO) {
+                for (auto c : v) {
+                    if (c == '/')
+                        ret++;
                 }
-            });
+            }
+        }
+    });
 
-            if (!path.has_value())
-                throw formatted_error("rename cmd without path");
+    return ret;
+}
 
-            if (!path_to.has_value())
-                throw formatted_error("rename cmd without path_to");
+static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+    unsigned int max_slashes = 0, slash_num = 0;
+    auto orig_sp = sp;
 
-            auto sqe = io_uring_get_sqe(&ring);
-            // FIXME - if sqe is NULL, wait
+    do {
+        sp = orig_sp;
 
-            io_uring_prep_renameat(sqe, dirfd, path.value().c_str(), dirfd,
-                                   path_to.value().c_str(), 0);
-            items_pending++;
-            io_uring_submit(&ring);
+        while (!sp.empty()) {
+            const auto& cmd = *(btrfs_cmd_header*)sp.data();
+
+            auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+
+            if (cmd.cmd == btrfs_send_cmd::RENAME) {
+                auto slashes = count_path_to_slashes(atts);
+
+                max_slashes = max(max_slashes, slashes);
+
+                if (slashes == slash_num) {
+                    optional<string> path, path_to;
+
+                    parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+                        if constexpr (is_same_v<T, string_view>) {
+                            if (attr == btrfs_send_attr::PATH)
+                                path = v;
+                            else if (attr == btrfs_send_attr::PATH_TO)
+                                path_to = v;
+                        }
+                    });
+
+                    if (!path.has_value())
+                        throw formatted_error("rename cmd without path");
+
+                    if (!path_to.has_value())
+                        throw formatted_error("rename cmd without path_to");
+
+                    auto sqe = io_uring_get_sqe(&ring);
+                    // FIXME - if sqe is NULL, wait
+
+                    io_uring_prep_renameat(sqe, dirfd, path.value().c_str(), dirfd,
+                                           path_to.value().c_str(), 0);
+                    items_pending++;
+                    io_uring_submit_and_wait(&ring, 1);
+                }
+            }
+
+            sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
         }
 
-        sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
-    }
-
-    do_wait(ring);
+        do_wait(ring);
+        slash_num++;
+    } while (slash_num < max_slashes);
 }
 
 static void parse(span<const uint8_t> sp) {

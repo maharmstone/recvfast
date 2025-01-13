@@ -422,8 +422,10 @@ static void do_wait(io_uring& ring) {
             throw formatted_error("io_uring_wait_cqe failed: {}", ret);
 
         // FIXME - which operation exactly?
+        // if (cqe->res < 0)
+            // throw formatted_error("operation failed: {}", cqe->res);
         if (cqe->res < 0)
-            throw formatted_error("operation failed: {}", cqe->res);
+            cerr << format("operation failed: {}\n", cqe->res); // TESTING
 
         items_pending--;
         io_uring_cqe_seen(&ring, cqe);

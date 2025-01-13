@@ -3,6 +3,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <getopt.h>
 #include <filesystem>
 #include <iostream>
 #include <format>
@@ -23,6 +24,8 @@ static unsigned int items_pending;
 static array<int, 256> files;
 static unsigned int next_file_index = 0;
 static unsigned int sqes_left = QUEUE_DEPTH;
+
+static bool verbose = false;
 
 struct btrfs_stream_header {
     char magic[sizeof(BTRFS_SEND_STREAM_MAGIC)];
@@ -615,21 +618,24 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
                 break;
 
             default:
-                cout << format("{}, {:x}, {:08x}\n", cmd.cmd, cmd.len, cmd.crc);
+                if (verbose) {
+                    cout << format("{}, {:x}, {:08x}\n", cmd.cmd, cmd.len, cmd.crc);
 
-                parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
-                    if constexpr (is_same_v<T, string_view>)
-                        cout << format("  {}: \"{}\"\n", attr, v);
-                    else if constexpr (is_same_v<T, uint64_t>) {
-                        if (attr == btrfs_send_attr::MODE)
-                            cout << format("  {}: {:o}\n", attr, v);
+                    parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
+                        if constexpr (is_same_v<T, string_view>)
+                            cout << format("  {}: \"{}\"\n", attr, v);
+                        else if constexpr (is_same_v<T, uint64_t>) {
+                            if (attr == btrfs_send_attr::MODE)
+                                cout << format("  {}: {:o}\n", attr, v);
+                            else
+                                cout << format("  {}: {}\n", attr, v);
+                        } else if constexpr (is_same_v<T, span<const uint8_t>>)
+                            cout << format("  {}: ({} bytes)\n", attr, v.size());
                         else
                             cout << format("  {}: {}\n", attr, v);
-                    } else if constexpr (is_same_v<T, span<const uint8_t>>)
-                        cout << format("  {}: ({} bytes)\n", attr, v.size());
-                    else
-                        cout << format("  {}: {}\n", attr, v);
-                });
+                    });
+                }
+
                 break;
         }
 
@@ -877,13 +883,41 @@ static void process(const filesystem::path& fn) {
     munmap(sp.data(), sp.size());
 }
 
+static void show_usage() {
+    cerr << "Usage: recvfast [-v|--verbose] <stream>" << endl;
+}
+
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        cerr << "Usage: recvfast <stream>" << endl;
+    int longindex = 0;
+
+    static const option longopts[] = {
+        {"verbose", no_argument, nullptr, 'v'},
+        {nullptr, 0, nullptr, 0}
+    };
+
+    while (true) {
+        auto c = getopt_long(argc, argv, "v", longopts, &longindex);
+
+        if (c == -1)
+            break;
+
+        switch (c) {
+            case 'v':
+                verbose = true;
+            break;
+
+            default:
+                show_usage();
+                return 1;
+        }
+    }
+
+    if (optind != argc - 1) {
+        show_usage();
         return 1;
     }
 
-    const char* fn = argv[1];
+    const char* fn = argv[optind];
 
     try {
         process(fn);

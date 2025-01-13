@@ -413,6 +413,34 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     io_uring_submit(&ring);
 }
 
+static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts) {
+    optional<string> path, path_link;
+
+    parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+        if constexpr (is_same_v<T, string_view>) {
+            if (attr == btrfs_send_attr::PATH)
+                path = v;
+            else if (attr == btrfs_send_attr::PATH_LINK)
+                path_link = v;
+        }
+    });
+
+    if (!path.has_value())
+        throw formatted_error("symlink cmd without path");
+    else if (!path.has_value())
+        throw formatted_error("symlink cmd without path_link");
+
+    auto sqe = io_uring_get_sqe(&ring);
+    // FIXME - if sqe is NULL, wait
+
+    // FIXME - mode
+
+    io_uring_prep_symlinkat(sqe, path_link.value().c_str(), dirfd,
+                            path.value().c_str());
+    items_pending++;
+    io_uring_submit(&ring);
+}
+
 static void do_wait(io_uring& ring) {
     while (items_pending > 0) {
         io_uring_cqe* cqe;
@@ -453,6 +481,10 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
 
             case btrfs_send_cmd::MKFILE:
                 do_mkfile(ring, dirfd, atts);
+                break;
+
+            case btrfs_send_cmd::SYMLINK:
+                do_symlink(ring, dirfd, atts);
                 break;
 
             case btrfs_send_cmd::RENAME:

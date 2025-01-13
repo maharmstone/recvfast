@@ -674,11 +674,13 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {
 
     io_uring_prep_write(sqe, file_index, data.value().data(), data.value().size(),
                         offset.value());
-    sqe->flags |= IOSQE_FIXED_FILE;
+    sqe->flags |= IOSQE_IO_LINK | IOSQE_FIXED_FILE;
 
-    // FIXME - close
+    sqe = io_uring_get_sqe(&ring);
 
-    items_pending += 2;
+    io_uring_prep_close_direct(sqe, file_index);
+
+    items_pending += 3;
     io_uring_submit(&ring);
 }
 

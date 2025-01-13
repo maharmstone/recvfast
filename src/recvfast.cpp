@@ -428,6 +428,7 @@ static io_uring_sqe* get_sqe(io_uring& ring) {
         return sqe;
 
     io_uring_submit(&ring);
+    sqes_left = QUEUE_DEPTH - 1;
 
     return io_uring_get_sqe(&ring);
 }

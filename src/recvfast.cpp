@@ -389,6 +389,30 @@ static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     io_uring_submit(&ring);
 }
 
+static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts) {
+    optional<string> path;
+
+    parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+        if constexpr (is_same_v<T, string_view>) {
+            if (attr == btrfs_send_attr::PATH)
+                path = v;
+        }
+    });
+
+    if (!path.has_value())
+        throw formatted_error("mkfile cmd without path");
+
+    auto sqe = io_uring_get_sqe(&ring);
+    // FIXME - if sqe is NULL, wait
+
+    // FIXME - mode
+
+    io_uring_prep_openat(sqe, dirfd, path.value().c_str(), O_CREAT | O_EXCL,
+                         0644);
+    items_pending++;
+    io_uring_submit(&ring);
+}
+
 static void do_wait(io_uring& ring) {
     while (items_pending > 0) {
         io_uring_cqe* cqe;
@@ -423,6 +447,10 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
         switch (cmd.cmd) {
             case btrfs_send_cmd::MKDIR:
                 do_mkdir(ring, dirfd, atts);
+                break;
+
+            case btrfs_send_cmd::MKFILE:
+                do_mkfile(ring, dirfd, atts);
                 break;
 
             case btrfs_send_cmd::RENAME:

@@ -21,6 +21,7 @@ static const unsigned int QUEUE_DEPTH = 256; // FIXME?
 static unsigned int items_pending;
 
 static array<int, 16> files;
+static unsigned int next_file_index = 0;
 
 struct btrfs_stream_header {
     char magic[sizeof(BTRFS_SEND_STREAM_MAGIC)];
@@ -632,6 +633,18 @@ static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
     } while (slash_num <= max_slashes);
 }
 
+static unsigned get_file_index(io_uring& ring) {
+    if (next_file_index < files.size()) {
+        next_file_index++;
+        return next_file_index - 1;
+    }
+
+    do_wait(ring);
+
+    next_file_index = 1;
+    return 0;
+}
+
 static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     optional<string> path;
     optional<uint64_t> offset;
@@ -664,7 +677,7 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {
 
     auto sqe = io_uring_get_sqe(&ring);
 
-    unsigned int file_index = 0; // FIXME
+    auto file_index = get_file_index(ring);
 
     io_uring_prep_openat_direct(sqe, dirfd, path.value().c_str(), O_WRONLY, 0,
                                 file_index);

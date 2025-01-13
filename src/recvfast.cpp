@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <iostream>
 #include <format>
+#include <chrono>
 #include <liburing.h>
 #include "unique_fd.h"
 
@@ -301,7 +302,11 @@ struct std::formatter<btrfs_timespec> {
 
     template<typename format_context>
     auto format(const btrfs_timespec& t, format_context& ctx) const {
-        return format_to(ctx.out(), "({:x}, {:x})", t.sec, t.nsec); // FIXME
+        auto tp = chrono::system_clock::from_time_t(t.sec);
+
+        tp += chrono::nanoseconds(t.nsec);
+
+        return format_to(ctx.out(), "{}", tp);
     }
 };
 

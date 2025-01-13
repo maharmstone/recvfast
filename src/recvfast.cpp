@@ -437,6 +437,37 @@ static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     io_uring_submit(&ring);
 }
 
+static void do_wait(io_uring& ring) {
+    while (items_pending > 0) {
+        io_uring_cqe* cqe;
+
+        auto ret = io_uring_wait_cqe(&ring, &cqe);
+        if (ret < 0)
+            throw formatted_error("io_uring_wait_cqe failed: {}", ret);
+
+        // FIXME - which operation exactly?
+        // if (cqe->res < 0)
+            // throw formatted_error("operation failed: {}", cqe->res);
+        if (cqe->res < 0)
+            cerr << format("operation failed: {}\n", cqe->res); // TESTING
+
+        items_pending--;
+        io_uring_cqe_seen(&ring, cqe);
+    }
+}
+
+static unsigned get_file_index(io_uring& ring) {
+    if (next_file_index < files.size()) {
+        next_file_index++;
+        return next_file_index - 1;
+    }
+
+    do_wait(ring);
+
+    next_file_index = 1;
+    return 0;
+}
+
 static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     optional<string> path;
 
@@ -450,14 +481,21 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     if (!path.has_value())
         throw formatted_error("mkfile cmd without path");
 
+    auto file_index = get_file_index(ring);
+
     auto sqe = io_uring_get_sqe(&ring);
-    // FIXME - if sqe is NULL, wait
 
     // FIXME - mode
 
-    io_uring_prep_openat(sqe, dirfd, path.value().c_str(), O_CREAT | O_EXCL,
-                         0644);
-    items_pending++;
+    io_uring_prep_openat_direct(sqe, dirfd, path.value().c_str(),
+                                O_CREAT | O_EXCL, 0644, file_index);
+    sqe->flags |= IOSQE_IO_LINK;
+
+    sqe = io_uring_get_sqe(&ring);
+
+    io_uring_prep_close_direct(sqe, file_index);
+
+    items_pending += 2;
     io_uring_submit(&ring);
 }
 
@@ -487,25 +525,6 @@ static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts) {
                             path.value().c_str());
     items_pending++;
     io_uring_submit(&ring);
-}
-
-static void do_wait(io_uring& ring) {
-    while (items_pending > 0) {
-        io_uring_cqe* cqe;
-
-        auto ret = io_uring_wait_cqe(&ring, &cqe);
-        if (ret < 0)
-            throw formatted_error("io_uring_wait_cqe failed: {}", ret);
-
-        // FIXME - which operation exactly?
-        // if (cqe->res < 0)
-            // throw formatted_error("operation failed: {}", cqe->res);
-        if (cqe->res < 0)
-            cerr << format("operation failed: {}\n", cqe->res); // TESTING
-
-        items_pending--;
-        io_uring_cqe_seen(&ring, cqe);
-    }
 }
 
 static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
@@ -631,18 +650,6 @@ static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
         do_wait(ring);
         slash_num++;
     } while (slash_num <= max_slashes);
-}
-
-static unsigned get_file_index(io_uring& ring) {
-    if (next_file_index < files.size()) {
-        next_file_index++;
-        return next_file_index - 1;
-    }
-
-    do_wait(ring);
-
-    next_file_index = 1;
-    return 0;
 }
 
 static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {

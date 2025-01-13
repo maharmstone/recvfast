@@ -384,7 +384,7 @@ static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     // FIXME - mode
     // FIXME - linking
 
-    io_uring_prep_mkdirat(sqe, dirfd, path.value().c_str(), 0644);
+    io_uring_prep_mkdirat(sqe, dirfd, path.value().c_str(), 0755);
     items_pending++;
     io_uring_submit(&ring);
 }
@@ -402,6 +402,7 @@ static void do_wait(io_uring& ring) {
             throw formatted_error("operation failed: {}", cqe->res);
 
         items_pending--;
+        io_uring_cqe_seen(&ring, cqe);
     }
 }
 
@@ -503,7 +504,7 @@ static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
                     io_uring_prep_renameat(sqe, dirfd, path.value().c_str(), dirfd,
                                            path_to.value().c_str(), 0);
                     items_pending++;
-                    io_uring_submit_and_wait(&ring, 1);
+                    io_uring_submit(&ring);
                 }
             }
 
@@ -512,7 +513,7 @@ static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
 
         do_wait(ring);
         slash_num++;
-    } while (slash_num < max_slashes);
+    } while (slash_num <= max_slashes);
 }
 
 static void parse(span<const uint8_t> sp) {

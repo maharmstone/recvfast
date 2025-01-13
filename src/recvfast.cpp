@@ -114,6 +114,7 @@ struct btrfs_timespec {
 } __attribute__ ((__packed__));
 
 struct sqe_ctx {
+    uint64_t offset;
     string path, path2;
 };
 
@@ -428,7 +429,7 @@ static io_uring_sqe* get_sqe(io_uring& ring) {
     return io_uring_get_sqe(&ring);
 }
 
-static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts) {
+static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts, uint64_t offset) {
     optional<string> path;
 
     parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
@@ -443,6 +444,7 @@ static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts) {
 
     auto ctx = new sqe_ctx;
 
+    ctx->offset = offset;
     ctx->path.swap(path.value());
 
     auto sqe = get_sqe(ring);
@@ -467,17 +469,19 @@ static void do_wait(io_uring& ring) {
             throw formatted_error("io_uring_wait_cqe failed: {}", ret);
 
         auto ptr = io_uring_cqe_get_data(cqe);
-        if (ptr) {
-            auto& ctx = *static_cast<sqe_ctx*>(ptr);
+        auto& ctx = *static_cast<sqe_ctx*>(ptr);
 
-            delete &ctx;
-        }
+        // if (cqe->res < 0) {
+        //     auto off = ctx.offset;
+        //     delete &ctx;
+        //
+        //     throw formatted_error("operation failed: {} (offset {:x})", cqe->res, off);
+        // }
 
-        // FIXME - which operation exactly?
-        // if (cqe->res < 0)
-            // throw formatted_error("operation failed: {}", cqe->res);
         if (cqe->res < 0)
-            cerr << format("operation failed: {}\n", cqe->res); // TESTING
+            cerr << format("operation failed: {} (offset {:x})\n", cqe->res, ctx.offset); // TESTING
+
+        delete &ctx;
 
         items_pending--;
         io_uring_cqe_seen(&ring, cqe);
@@ -496,7 +500,7 @@ static unsigned get_file_index(io_uring& ring) {
     return 0;
 }
 
-static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts) {
+static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts, uint64_t offset) {
     optional<string> path;
 
     parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
@@ -513,6 +517,7 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts) {
 
     auto ctx = new sqe_ctx;
 
+    ctx->offset = offset;
     ctx->path.swap(path.value());
 
     auto sqe = get_sqe(ring);
@@ -526,13 +531,16 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts) {
 
     sqe = get_sqe(ring);
 
+    ctx = new sqe_ctx;
+    ctx->offset = offset;
+
     io_uring_prep_close_direct(sqe, file_index);
-    io_uring_sqe_set_data(sqe, nullptr);
+    io_uring_sqe_set_data(sqe, ctx);
 
     items_pending += 2;
 }
 
-static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts) {
+static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts, uint64_t offset) {
     optional<string> path, path_link;
 
     parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
@@ -553,6 +561,7 @@ static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts) {
 
     auto ctx = new sqe_ctx;
 
+    ctx->offset = offset;
     ctx->path.swap(path.value());
     ctx->path2.swap(path_link.value());
 
@@ -564,6 +573,9 @@ static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts) {
 }
 
 static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+    auto orig_sp = span(sp.data() - sizeof(btrfs_stream_header),
+                        sp.size() + sizeof(btrfs_stream_header));
+
     while (!sp.empty()) {
         if (sp.size() < sizeof(btrfs_cmd_header))
             throw runtime_error("Command exceeding bounds of file.");
@@ -579,15 +591,15 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
 
         switch (cmd.cmd) {
             case btrfs_send_cmd::MKDIR:
-                do_mkdir(ring, dirfd, atts);
+                do_mkdir(ring, dirfd, atts, sp.data() - orig_sp.data());
                 break;
 
             case btrfs_send_cmd::MKFILE:
-                do_mkfile(ring, dirfd, atts);
+                do_mkfile(ring, dirfd, atts, sp.data() - orig_sp.data());
                 break;
 
             case btrfs_send_cmd::SYMLINK:
-                do_symlink(ring, dirfd, atts);
+                do_symlink(ring, dirfd, atts, sp.data() - orig_sp.data());
                 break;
 
             case btrfs_send_cmd::RENAME:
@@ -674,6 +686,7 @@ static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
 
                     auto ctx = new sqe_ctx;
 
+                    ctx->offset = sp.data() - orig_sp.data() + sizeof(btrfs_cmd_header);
                     ctx->path.swap(path.value());
                     ctx->path2.swap(path_to.value());
 
@@ -692,9 +705,10 @@ static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
     } while (slash_num <= max_slashes);
 }
 
-static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {
+static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts,
+                     uint64_t offset) {
     optional<string> path;
-    optional<uint64_t> offset;
+    optional<uint64_t> file_offset;
     optional<span<const uint8_t>> data;
 
     parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
@@ -703,7 +717,7 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {
                 path = v;
         } else if constexpr (is_same_v<T, uint64_t>) {
             if (attr == btrfs_send_attr::FILE_OFFSET)
-                offset = v;
+                file_offset = v;
         } else if constexpr (is_same_v<T, span<const uint8_t>>) {
             if (attr == btrfs_send_attr::DATA)
                 data = v;
@@ -713,8 +727,8 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     if (!path.has_value())
         throw formatted_error("write cmd without path");
 
-    if (!offset.has_value())
-        throw formatted_error("write cmd without offset");
+    if (!file_offset.has_value())
+        throw formatted_error("write cmd without file_offset");
 
     if (!data.has_value())
         throw formatted_error("write cmd without data");
@@ -728,6 +742,7 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {
 
     auto ctx = new sqe_ctx;
 
+    ctx->offset = offset;
     ctx->path.swap(path.value());
 
     io_uring_prep_openat_direct(sqe, dirfd, ctx->path.c_str(), O_WRONLY, 0,
@@ -736,28 +751,37 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     sqe->flags |= IOSQE_IO_LINK;
 
     sqe = get_sqe(ring);
+    ctx = new sqe_ctx;
+
+    ctx->offset = offset;
 
     io_uring_prep_write(sqe, file_index, data.value().data(), data.value().size(),
-                        offset.value());
-    io_uring_sqe_set_data(sqe, nullptr);
+                        file_offset.value());
+    io_uring_sqe_set_data(sqe, ctx);
     sqe->flags |= IOSQE_IO_LINK | IOSQE_FIXED_FILE;
 
     sqe = get_sqe(ring);
+    ctx = new sqe_ctx;
+
+    ctx->offset = offset;
 
     io_uring_prep_close_direct(sqe, file_index);
-    io_uring_sqe_set_data(sqe, nullptr);
+    io_uring_sqe_set_data(sqe, ctx);
 
     items_pending += 3;
 }
 
 static void do_writes(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+    auto orig_sp = span(sp.data() - sizeof(btrfs_stream_header),
+                        sp.size() + sizeof(btrfs_stream_header));
+
     while (!sp.empty()) {
         const auto& cmd = *(btrfs_cmd_header*)sp.data();
 
         auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
 
         if (cmd.cmd == btrfs_send_cmd::WRITE)
-            do_write(ring, dirfd, atts);
+            do_write(ring, dirfd, atts, sp.data() - orig_sp.data());
 
         sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
     }

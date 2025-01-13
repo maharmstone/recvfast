@@ -113,6 +113,10 @@ struct btrfs_timespec {
     uint32_t nsec;
 } __attribute__ ((__packed__));
 
+struct sqe_ctx {
+    string path, path2;
+};
+
 class formatted_error : public exception {
 public:
     template<typename... Args>
@@ -413,6 +417,17 @@ static void parse_atts(span<const uint8_t> sp, const T& func) {
     }
 }
 
+static io_uring_sqe* get_sqe(io_uring& ring) {
+    auto sqe = io_uring_get_sqe(&ring);
+
+    if (sqe)
+        return sqe;
+
+    io_uring_submit(&ring);
+
+    return io_uring_get_sqe(&ring);
+}
+
 static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     optional<string> path;
 
@@ -426,24 +441,37 @@ static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     if (!path.has_value())
         throw formatted_error("mkdir cmd without path");
 
-    auto sqe = io_uring_get_sqe(&ring);
-    // FIXME - if sqe is NULL, wait
+    auto ctx = new sqe_ctx;
+
+    ctx->path.swap(path.value());
+
+    auto sqe = get_sqe(ring);
 
     // FIXME - mode
     // FIXME - linking
 
-    io_uring_prep_mkdirat(sqe, dirfd, path.value().c_str(), 0755);
+    io_uring_prep_mkdirat(sqe, dirfd, ctx->path.c_str(), 0755);
+    io_uring_sqe_set_data(sqe, ctx);
+
     items_pending++;
-    io_uring_submit(&ring);
 }
 
 static void do_wait(io_uring& ring) {
+    io_uring_submit(&ring);
+
     while (items_pending > 0) {
         io_uring_cqe* cqe;
 
         auto ret = io_uring_wait_cqe(&ring, &cqe);
         if (ret < 0)
             throw formatted_error("io_uring_wait_cqe failed: {}", ret);
+
+        auto ptr = io_uring_cqe_get_data(cqe);
+        if (ptr) {
+            auto& ctx = *static_cast<sqe_ctx*>(ptr);
+
+            delete &ctx;
+        }
 
         // FIXME - which operation exactly?
         // if (cqe->res < 0)
@@ -483,20 +511,25 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts) {
 
     auto file_index = get_file_index(ring);
 
-    auto sqe = io_uring_get_sqe(&ring);
+    auto ctx = new sqe_ctx;
+
+    ctx->path.swap(path.value());
+
+    auto sqe = get_sqe(ring);
 
     // FIXME - mode
 
-    io_uring_prep_openat_direct(sqe, dirfd, path.value().c_str(),
+    io_uring_prep_openat_direct(sqe, dirfd, ctx->path.c_str(),
                                 O_CREAT | O_EXCL, 0644, file_index);
+    io_uring_sqe_set_data(sqe, ctx);
     sqe->flags |= IOSQE_IO_LINK;
 
-    sqe = io_uring_get_sqe(&ring);
+    sqe = get_sqe(ring);
 
     io_uring_prep_close_direct(sqe, file_index);
+    io_uring_sqe_set_data(sqe, nullptr);
 
     items_pending += 2;
-    io_uring_submit(&ring);
 }
 
 static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts) {
@@ -516,15 +549,18 @@ static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     else if (!path.has_value())
         throw formatted_error("symlink cmd without path_link");
 
-    auto sqe = io_uring_get_sqe(&ring);
-    // FIXME - if sqe is NULL, wait
+    auto sqe = get_sqe(ring);
+
+    auto ctx = new sqe_ctx;
+
+    ctx->path.swap(path.value());
+    ctx->path2.swap(path_link.value());
 
     // FIXME - mode
 
-    io_uring_prep_symlinkat(sqe, path_link.value().c_str(), dirfd,
-                            path.value().c_str());
+    io_uring_prep_symlinkat(sqe, ctx->path2.c_str(), dirfd, ctx->path.c_str());
+    io_uring_sqe_set_data(sqe, ctx);
     items_pending++;
-    io_uring_submit(&ring);
 }
 
 static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
@@ -634,13 +670,17 @@ static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
                     if (!path_to.has_value())
                         throw formatted_error("rename cmd without path_to");
 
-                    auto sqe = io_uring_get_sqe(&ring);
-                    // FIXME - if sqe is NULL, wait
+                    auto sqe = get_sqe(ring);
 
-                    io_uring_prep_renameat(sqe, dirfd, path.value().c_str(), dirfd,
-                                           path_to.value().c_str(), 0);
+                    auto ctx = new sqe_ctx;
+
+                    ctx->path.swap(path.value());
+                    ctx->path2.swap(path_to.value());
+
+                    io_uring_prep_renameat(sqe, dirfd, ctx->path.c_str(), dirfd,
+                                           ctx->path2.c_str(), 0);
+                    io_uring_sqe_set_data(sqe, ctx);
                     items_pending++;
-                    io_uring_submit(&ring);
                 }
             }
 
@@ -682,26 +722,32 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {
     // FIXME - if we've just mkfile'd this, the fd should still be open
     // FIXME - keep fd open if multiple write commands
 
-    auto sqe = io_uring_get_sqe(&ring);
-
     auto file_index = get_file_index(ring);
 
-    io_uring_prep_openat_direct(sqe, dirfd, path.value().c_str(), O_WRONLY, 0,
+    auto sqe = get_sqe(ring);
+
+    auto ctx = new sqe_ctx;
+
+    ctx->path.swap(path.value());
+
+    io_uring_prep_openat_direct(sqe, dirfd, ctx->path.c_str(), O_WRONLY, 0,
                                 file_index);
+    io_uring_sqe_set_data(sqe, ctx);
     sqe->flags |= IOSQE_IO_LINK;
 
-    sqe = io_uring_get_sqe(&ring);
+    sqe = get_sqe(ring);
 
     io_uring_prep_write(sqe, file_index, data.value().data(), data.value().size(),
                         offset.value());
+    io_uring_sqe_set_data(sqe, nullptr);
     sqe->flags |= IOSQE_IO_LINK | IOSQE_FIXED_FILE;
 
-    sqe = io_uring_get_sqe(&ring);
+    sqe = get_sqe(ring);
 
     io_uring_prep_close_direct(sqe, file_index);
+    io_uring_sqe_set_data(sqe, nullptr);
 
     items_pending += 3;
-    io_uring_submit(&ring);
 }
 
 static void do_writes(io_uring& ring, int dirfd, span<const uint8_t> sp) {

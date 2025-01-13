@@ -384,7 +384,15 @@ static void parse_atts(span<const uint8_t> sp, const T& func) {
                 break;
             }
 
-            // FIXME - DATA
+            case btrfs_send_attr::DATA: {
+                auto sp2 = sp.subspan(sizeof(btrfs_tlv_header), h.tlv_len);
+
+                // FIXME - different for stream version 2
+
+                func(h.tlv_type, sp2);
+                break;
+            }
+
             // FIXME - VERITY_ALGORITHM
             // FIXME - VERITY_BLOCK_SIZE
             // FIXME - VERITY_SALT_DATA
@@ -537,7 +545,9 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
                             cout << format("  {}: {:o}\n", attr, v);
                         else
                             cout << format("  {}: {}\n", attr, v);
-                    } else
+                    } else if constexpr (is_same_v<T, span<const uint8_t>>)
+                        cout << format("  {}: ({} bytes)\n", attr, v.size());
+                    else
                         cout << format("  {}: {}\n", attr, v);
                 });
                 break;

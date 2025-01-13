@@ -434,8 +434,12 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
                 parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
                     if constexpr (is_same_v<T, string_view>)
                         cout << format("  {}: \"{}\"\n", attr, v);
-                    else
-                        cout << format("  {}: {}\n", attr, v);
+                    else {
+                        if (attr == btrfs_send_attr::MODE)
+                            cout << format("  {}: {:o}\n", attr, v);
+                        else
+                            cout << format("  {}: {}\n", attr, v);
+                    }
                 });
                 break;
         }

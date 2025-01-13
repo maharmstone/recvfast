@@ -7,6 +7,7 @@
 #include <iostream>
 #include <format>
 #include <chrono>
+#include <array>
 #include <liburing.h>
 #include "unique_fd.h"
 
@@ -18,6 +19,8 @@ static const uint32_t BTRFS_SEND_STREAM_VERSION = 3;
 static const unsigned int QUEUE_DEPTH = 256; // FIXME?
 
 static unsigned int items_pending;
+
+static array<int, 16> files;
 
 struct btrfs_stream_header {
     char magic[sizeof(BTRFS_SEND_STREAM_MAGIC)];
@@ -629,6 +632,71 @@ static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
     } while (slash_num <= max_slashes);
 }
 
+static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts) {
+    optional<string> path;
+    optional<uint64_t> offset;
+    optional<span<const uint8_t>> data;
+
+    parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+        if constexpr (is_same_v<T, string_view>) {
+            if (attr == btrfs_send_attr::PATH)
+                path = v;
+        } else if constexpr (is_same_v<T, uint64_t>) {
+            if (attr == btrfs_send_attr::FILE_OFFSET)
+                offset = v;
+        } else if constexpr (is_same_v<T, span<const uint8_t>>) {
+            if (attr == btrfs_send_attr::DATA)
+                data = v;
+        }
+    });
+
+    if (!path.has_value())
+        throw formatted_error("write cmd without path");
+
+    if (!offset.has_value())
+        throw formatted_error("write cmd without offset");
+
+    if (!data.has_value())
+        throw formatted_error("write cmd without data");
+
+    // FIXME - if we've just mkfile'd this, the fd should still be open
+    // FIXME - keep fd open if multiple write commands
+
+    auto sqe = io_uring_get_sqe(&ring);
+
+    unsigned int file_index = 0; // FIXME
+
+    io_uring_prep_openat_direct(sqe, dirfd, path.value().c_str(), O_WRONLY, 0,
+                                file_index);
+    sqe->flags |= IOSQE_IO_LINK;
+
+    sqe = io_uring_get_sqe(&ring);
+
+    io_uring_prep_write(sqe, file_index, data.value().data(), data.value().size(),
+                        offset.value());
+    sqe->flags |= IOSQE_FIXED_FILE;
+
+    // FIXME - close
+
+    items_pending += 2;
+    io_uring_submit(&ring);
+}
+
+static void do_writes(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+    while (!sp.empty()) {
+        const auto& cmd = *(btrfs_cmd_header*)sp.data();
+
+        auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+
+        if (cmd.cmd == btrfs_send_cmd::WRITE)
+            do_write(ring, dirfd, atts);
+
+        sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
+    }
+
+    do_wait(ring);
+}
+
 static void parse(span<const uint8_t> sp) {
     const auto& h = *(btrfs_stream_header*)sp.data();
 
@@ -659,8 +727,12 @@ static void parse(span<const uint8_t> sp) {
         throw formatted_error("io_uring_queue_init failed: {}", ret);
 
     try {
+        if (auto ret = io_uring_register_files(&ring, files.data(), files.size()); ret)
+            throw formatted_error("io_uring_register_files failed: {}", ret);
+
         create_files(ring, dirfd.get(), sp);
         do_renames(ring, dirfd.get(), sp);
+        do_writes(ring, dirfd.get(), sp);
     } catch (...) {
         io_uring_queue_exit(&ring);
         throw;

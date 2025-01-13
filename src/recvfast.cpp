@@ -20,7 +20,7 @@ static const unsigned int QUEUE_DEPTH = 256; // FIXME?
 
 static unsigned int items_pending;
 
-static array<int, 16> files;
+static array<int, 256> files;
 static unsigned int next_file_index = 0;
 static unsigned int sqes_left = QUEUE_DEPTH;
 

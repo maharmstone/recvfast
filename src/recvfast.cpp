@@ -22,6 +22,7 @@ static unsigned int items_pending;
 
 static array<int, 16> files;
 static unsigned int next_file_index = 0;
+static unsigned int sqes_left = QUEUE_DEPTH;
 
 struct btrfs_stream_header {
     char magic[sizeof(BTRFS_SEND_STREAM_MAGIC)];
@@ -419,6 +420,8 @@ static void parse_atts(span<const uint8_t> sp, const T& func) {
 }
 
 static io_uring_sqe* get_sqe(io_uring& ring) {
+    sqes_left--;
+
     auto sqe = io_uring_get_sqe(&ring);
 
     if (sqe)
@@ -486,6 +489,8 @@ static void do_wait(io_uring& ring) {
         items_pending--;
         io_uring_cqe_seen(&ring, cqe);
     }
+
+    sqes_left = QUEUE_DEPTH;
 }
 
 static unsigned get_file_index(io_uring& ring) {
@@ -519,6 +524,9 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts, uint6
 
     ctx->offset = offset;
     ctx->path.swap(path.value());
+
+    if (sqes_left < 2)
+        do_wait(ring);
 
     auto sqe = get_sqe(ring);
 
@@ -737,6 +745,9 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts,
     // FIXME - keep fd open if multiple write commands
 
     auto file_index = get_file_index(ring);
+
+    if (sqes_left < 3)
+        do_wait(ring);
 
     auto sqe = get_sqe(ring);
 

@@ -103,6 +103,11 @@ struct btrfs_tlv_header {
     uint16_t tlv_len;
 } __attribute__ ((__packed__));
 
+struct btrfs_timespec {
+    uint64_t sec;
+    uint32_t nsec;
+} __attribute__ ((__packed__));
+
 class formatted_error : public exception {
 public:
     template<typename... Args>
@@ -283,6 +288,23 @@ struct std::formatter<enum btrfs_send_attr> {
     }
 };
 
+template<>
+struct std::formatter<btrfs_timespec> {
+    constexpr auto parse(format_parse_context& ctx) {
+        auto it = ctx.begin();
+
+        if (it != ctx.end() && *it != '}')
+            throw format_error("invalid format");
+
+        return it;
+    }
+
+    template<typename format_context>
+    auto format(const btrfs_timespec& t, format_context& ctx) const {
+        return format_to(ctx.out(), "({:x}, {:x})", t.sec, t.nsec); // FIXME
+    }
+};
+
 // FIXME - invocable concept for func
 template<typename T>
 static void parse_atts(span<const uint8_t> sp, const T& func) {
@@ -344,15 +366,24 @@ static void parse_atts(span<const uint8_t> sp, const T& func) {
                 break;
             }
 
+            case btrfs_send_attr::CTIME:
+            case btrfs_send_attr::MTIME:
+            case btrfs_send_attr::ATIME:
+            case btrfs_send_attr::OTIME: {
+                if (h.tlv_len != sizeof(btrfs_timespec))
+                    throw formatted_error("Length for {} was {}, expected {}", h.tlv_type, h.tlv_len, sizeof(btrfs_timespec));
+
+                auto& t = *(btrfs_timespec*)(sp.data() + sizeof(btrfs_tlv_header));
+
+                func(h.tlv_type, t);
+                break;
+            }
+
             // FIXME - DATA
             // FIXME - VERITY_ALGORITHM
             // FIXME - VERITY_BLOCK_SIZE
             // FIXME - VERITY_SALT_DATA
             // FIXME - VERITY_SIG_DATA
-            // FIXME - CTIME
-            // FIXME - MTIME
-            // FIXME - ATIME
-            // FIXME - OTIME
             // FIXME - UUID
             // FIXME - CLONE_UUID
 
@@ -496,12 +527,13 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
                 parse_atts(atts, []<typename T>(enum btrfs_send_attr attr, const T& v) {
                     if constexpr (is_same_v<T, string_view>)
                         cout << format("  {}: \"{}\"\n", attr, v);
-                    else {
+                    else if constexpr (is_same_v<T, uint64_t>) {
                         if (attr == btrfs_send_attr::MODE)
                             cout << format("  {}: {:o}\n", attr, v);
                         else
                             cout << format("  {}: {}\n", attr, v);
-                    }
+                    } else
+                        cout << format("  {}: {}\n", attr, v);
                 });
                 break;
         }

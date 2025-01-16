@@ -663,61 +663,80 @@ static unsigned int count_path_to_slashes(span<const uint8_t> atts) {
 }
 
 static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
-    unsigned int max_slashes = 0, slash_num = 0;
     auto orig_sp = sp;
 
-    do {
-        sp = orig_sp;
+    struct rename_entry {
+        const uint8_t* ptr;
+        unsigned int num_slashes;
+    };
 
-        while (!sp.empty()) {
-            const auto& cmd = *(btrfs_cmd_header*)sp.data();
+    vector<rename_entry> entries;
 
-            auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+    while (!sp.empty()) {
+        const auto& cmd = *(btrfs_cmd_header*)sp.data();
 
-            if (cmd.cmd == btrfs_send_cmd::RENAME) {
-                auto slashes = count_path_to_slashes(atts);
+        auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
 
-                max_slashes = max(max_slashes, slashes);
+        if (cmd.cmd == btrfs_send_cmd::RENAME) {
+            auto slashes = count_path_to_slashes(atts);
 
-                if (slashes == slash_num) {
-                    optional<string> path, path_to;
-
-                    parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
-                        if constexpr (is_same_v<T, string_view>) {
-                            if (attr == btrfs_send_attr::PATH)
-                                path = v;
-                            else if (attr == btrfs_send_attr::PATH_TO)
-                                path_to = v;
-                        }
-                    });
-
-                    if (!path.has_value())
-                        throw formatted_error("rename cmd without path");
-
-                    if (!path_to.has_value())
-                        throw formatted_error("rename cmd without path_to");
-
-                    auto sqe = get_sqe(ring);
-
-                    auto ctx = new sqe_ctx;
-
-                    ctx->offset = sp.data() - orig_sp.data() + sizeof(btrfs_cmd_header);
-                    ctx->path.swap(path.value());
-                    ctx->path2.swap(path_to.value());
-
-                    io_uring_prep_renameat(sqe, dirfd, ctx->path.c_str(), dirfd,
-                                           ctx->path2.c_str(), 0);
-                    io_uring_sqe_set_data(sqe, ctx);
-                    items_pending++;
-                }
-            }
-
-            sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
+            entries.emplace_back(sp.data(), slashes);
         }
 
-        do_wait(ring);
-        slash_num++;
-    } while (slash_num <= max_slashes);
+        sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
+    }
+
+    if (entries.empty())
+        return;
+
+    sort(entries.begin(), entries.end(), [](const rename_entry& a, const rename_entry& b) {
+        return a.num_slashes < b.num_slashes;
+    });
+
+    unsigned int last_num_slashes = 0;
+
+    for (const auto& e : entries) {
+        const auto& cmd = *(btrfs_cmd_header*)e.ptr;
+
+        if (e.num_slashes > last_num_slashes) {
+            do_wait(ring);
+            last_num_slashes = e.num_slashes;
+        }
+
+        auto atts = span(e.ptr + sizeof(btrfs_cmd_header), cmd.len);
+
+        optional<string> path, path_to;
+
+        parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+            if constexpr (is_same_v<T, string_view>) {
+                if (attr == btrfs_send_attr::PATH)
+                    path = v;
+                else if (attr == btrfs_send_attr::PATH_TO)
+                    path_to = v;
+            }
+        });
+
+        if (!path.has_value())
+            throw formatted_error("rename cmd without path");
+
+        if (!path_to.has_value())
+            throw formatted_error("rename cmd without path_to");
+
+        auto sqe = get_sqe(ring);
+
+        auto ctx = new sqe_ctx;
+
+        ctx->offset = e.ptr - orig_sp.data() + sizeof(btrfs_cmd_header);
+        ctx->path.swap(path.value());
+        ctx->path2.swap(path_to.value());
+
+        io_uring_prep_renameat(sqe, dirfd, ctx->path.c_str(), dirfd,
+                                ctx->path2.c_str(), 0);
+        io_uring_sqe_set_data(sqe, ctx);
+        items_pending++;
+    }
+
+    do_wait(ring);
 }
 
 static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts,

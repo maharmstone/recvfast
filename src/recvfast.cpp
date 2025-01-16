@@ -847,42 +847,53 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts,
     // FIXME - if we've just mkfile'd this, the fd should still be open
     // FIXME - keep fd open if multiple write commands
 
-    auto file_index = get_file_index(ring);
+    if (no_uring) {
+        auto pathstr = string(path.value());
 
-    if (sqes_left < 3)
-        do_wait(ring);
+        auto fd = openat(dirfd, pathstr.c_str(), O_WRONLY, 0);
+        if (fd < 0)
+            throw formatted_error("openat failed: {}", errno);
 
-    auto sqe = get_sqe(ring);
+        if (auto ret = pwrite(fd, data.value().data(), data.value().size(), file_offset.value()); ret < 0)
+            throw formatted_error("pwrite failed: {}", errno);
+    } else {
+        auto file_index = get_file_index(ring);
 
-    auto ctx = new sqe_ctx;
+        if (sqes_left < 3)
+            do_wait(ring);
 
-    ctx->offset = offset;
-    ctx->path.swap(path.value());
+        auto sqe = get_sqe(ring);
 
-    io_uring_prep_openat_direct(sqe, dirfd, ctx->path.c_str(), O_WRONLY, 0,
-                                file_index);
-    io_uring_sqe_set_data(sqe, ctx);
-    sqe->flags |= IOSQE_IO_LINK;
+        auto ctx = new sqe_ctx;
 
-    sqe = get_sqe(ring);
-    ctx = new sqe_ctx;
+        ctx->offset = offset;
+        ctx->path.swap(path.value());
 
-    ctx->offset = offset;
+        io_uring_prep_openat_direct(sqe, dirfd, ctx->path.c_str(), O_WRONLY, 0,
+                                    file_index);
+        io_uring_sqe_set_data(sqe, ctx);
+        sqe->flags |= IOSQE_IO_LINK;
 
-    io_uring_prep_write(sqe, file_index, data.value().data(), data.value().size(),
-                        file_offset.value());
-    io_uring_sqe_set_data(sqe, ctx);
-    sqe->flags |= IOSQE_IO_LINK | IOSQE_FIXED_FILE;
+        sqe = get_sqe(ring);
+        ctx = new sqe_ctx;
 
-    sqe = get_sqe(ring);
-    ctx = new sqe_ctx;
+        ctx->offset = offset;
 
-    ctx->offset = offset;
+        io_uring_prep_write(sqe, file_index, data.value().data(), data.value().size(),
+                            file_offset.value());
+        io_uring_sqe_set_data(sqe, ctx);
+        sqe->flags |= IOSQE_IO_LINK | IOSQE_FIXED_FILE;
 
-    io_uring_prep_close_direct(sqe, file_index);
-    io_uring_sqe_set_data(sqe, ctx);
+        sqe = get_sqe(ring);
+        ctx = new sqe_ctx;
 
-    items_pending += 3;
+        ctx->offset = offset;
+
+        io_uring_prep_close_direct(sqe, file_index);
+        io_uring_sqe_set_data(sqe, ctx);
+
+        items_pending += 3;
+    }
 }
 
 static void do_writes(io_uring& ring, int dirfd, span<const uint8_t> sp) {

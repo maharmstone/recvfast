@@ -9,6 +9,7 @@
 #include <format>
 #include <chrono>
 #include <array>
+#include <map>
 #include <liburing.h>
 #include "unique_fd.h"
 
@@ -121,6 +122,14 @@ struct sqe_ctx {
     uint64_t offset;
     string path, path2;
 };
+
+struct rename_entry2 {
+    const uint8_t* ptr;
+    string_view path_to;
+    unsigned int slashes;
+};
+
+map<string, rename_entry2, less<>> renames;
 
 class formatted_error : public exception {
 public:
@@ -436,35 +445,6 @@ static io_uring_sqe* get_sqe(io_uring& ring) {
     return io_uring_get_sqe(&ring);
 }
 
-static void do_mkdir(io_uring& ring, int dirfd, span<const uint8_t> atts, uint64_t offset) {
-    optional<string> path;
-
-    parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
-        if constexpr (is_same_v<T, string_view>) {
-            if (attr == btrfs_send_attr::PATH)
-                path = v;
-        }
-    });
-
-    if (!path.has_value())
-        throw formatted_error("mkdir cmd without path");
-
-    auto ctx = new sqe_ctx;
-
-    ctx->offset = offset;
-    ctx->path.swap(path.value());
-
-    auto sqe = get_sqe(ring);
-
-    // FIXME - mode
-    // FIXME - linking
-
-    io_uring_prep_mkdirat(sqe, dirfd, ctx->path.c_str(), 0755);
-    io_uring_sqe_set_data(sqe, ctx);
-
-    items_pending++;
-}
-
 static void do_wait(io_uring& ring) {
     io_uring_submit(&ring);
 
@@ -584,7 +564,7 @@ static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts, uint
     items_pending++;
 }
 
-static void create_dirs(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+static void scan(span<const uint8_t> sp) {
     auto orig_sp = span(sp.data() - sizeof(btrfs_stream_header),
                         sp.size() + sizeof(btrfs_stream_header));
 
@@ -602,9 +582,43 @@ static void create_dirs(io_uring& ring, int dirfd, span<const uint8_t> sp) {
         auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
 
         switch (cmd.cmd) {
-            case btrfs_send_cmd::MKDIR:
-                do_mkdir(ring, dirfd, atts, sp.data() - orig_sp.data());
-                break;
+            case btrfs_send_cmd::RENAME: {
+                auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+
+                optional<string> path;
+                optional<string_view> path_to;
+
+                parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+                    if constexpr (is_same_v<T, string_view>) {
+                        if (attr == btrfs_send_attr::PATH)
+                            path = v;
+                        else if (attr == btrfs_send_attr::PATH_TO)
+                            path_to = v;
+                    }
+                });
+
+                if (!path.has_value())
+                    throw formatted_error("rename cmd without path");
+
+                if (!path_to.has_value())
+                    throw formatted_error("rename cmd without path_to");
+
+                auto [it, success] = renames.insert(pair{path.value(), rename_entry2{}});
+
+                auto& r = it->second;
+
+                r.ptr = sp.data();
+                r.path_to = path_to.value();
+                r.slashes = 0;
+
+                for (auto c : r.path_to) {
+                    if (c == '/')
+                        r.slashes++;
+                }
+
+                // FIXME
+                __attribute__((fallthrough));
+            }
 
             default:
                 if (verbose) {
@@ -630,6 +644,96 @@ static void create_dirs(io_uring& ring, int dirfd, span<const uint8_t> sp) {
 
         sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
     }
+}
+
+static void create_dirs(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+    auto orig_sp = span(sp.data() - sizeof(btrfs_stream_header),
+                        sp.size() + sizeof(btrfs_stream_header));
+
+    struct mkdir_entry {
+        mkdir_entry(const uint8_t* ptr, string_view path, rename_entry2& r) : ptr(ptr), path(path), r(&r) { }
+
+        const uint8_t* ptr;
+        string_view path;
+        rename_entry2* r;
+    };
+
+    vector<mkdir_entry> entries;
+
+    while (!sp.empty()) {
+        if (sp.size() < sizeof(btrfs_cmd_header))
+            throw runtime_error("Command exceeding bounds of file.");
+
+        const auto& cmd = *(btrfs_cmd_header*)sp.data();
+
+        if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))
+            throw runtime_error("Command exceeding bounds of file.");
+
+        auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+
+        switch (cmd.cmd) {
+            case btrfs_send_cmd::MKDIR: {
+                optional<string_view> path;
+
+                parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
+                    if constexpr (is_same_v<T, string_view>) {
+                        if (attr == btrfs_send_attr::PATH)
+                            path = v;
+                    }
+                });
+
+                if (!path.has_value())
+                    throw formatted_error("mkdir cmd without path");
+
+                auto it = renames.find(path.value());
+
+                if (it == renames.end())
+                    throw runtime_error("no rename found for mkdir");
+
+                auto& r = it->second;
+
+                entries.emplace_back(sp.data(), path.value(), r);
+
+                break;
+            }
+
+            default:
+                break;
+        }
+
+        sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
+    }
+
+    sort(entries.begin(), entries.end(), [](const mkdir_entry& a, const mkdir_entry& b) {
+        return a.r->slashes < b.r->slashes;
+    });
+
+    unsigned int last_slashes = 0;
+
+    for (const auto& e : entries) {
+        auto path = string(e.r->path_to);
+
+        auto ctx = new sqe_ctx;
+
+        ctx->offset = e.ptr - orig_sp.data();
+        ctx->path.swap(path);
+
+        if (e.r->slashes > last_slashes) {
+            do_wait(ring);
+            last_slashes = e.r->slashes;
+        }
+
+        auto sqe = get_sqe(ring);
+
+        // FIXME - mode
+
+        io_uring_prep_mkdirat(sqe, dirfd, ctx->path.c_str(), 0755);
+        io_uring_sqe_set_data(sqe, ctx);
+
+        items_pending++;
+
+        renames.erase(renames.find(e.path));
+    }
 
     do_wait(ring);
 }
@@ -643,8 +747,6 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
             throw runtime_error("Command exceeding bounds of file.");
 
         const auto& cmd = *(btrfs_cmd_header*)sp.data();
-
-        // FIXME - check CRC?
 
         if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))
             throw runtime_error("Command exceeding bounds of file.");
@@ -884,6 +986,7 @@ static void parse(span<const uint8_t> sp) {
         if (auto ret = io_uring_register_files(&ring, files.data(), files.size()); ret)
             throw formatted_error("io_uring_register_files failed: {}", ret);
 
+        scan(sp);
         create_dirs(ring, dirfd.get(), sp);
         create_files(ring, dirfd.get(), sp);
         do_renames(ring, dirfd.get(), sp);

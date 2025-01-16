@@ -123,13 +123,13 @@ struct sqe_ctx {
     string path, path2;
 };
 
-struct rename_entry2 {
+struct rename_entry {
     const uint8_t* ptr;
     string_view path_to;
     unsigned int slashes;
 };
 
-map<string, rename_entry2, less<>> renames;
+map<string, rename_entry, less<>> renames;
 
 class formatted_error : public exception {
 public:
@@ -603,7 +603,7 @@ static void scan(span<const uint8_t> sp) {
                 if (!path_to.has_value())
                     throw formatted_error("rename cmd without path_to");
 
-                auto [it, success] = renames.insert(pair{path.value(), rename_entry2{}});
+                auto [it, success] = renames.insert(pair{path.value(), rename_entry{}});
 
                 auto& r = it->second;
 
@@ -651,11 +651,11 @@ static void create_dirs(io_uring& ring, int dirfd, span<const uint8_t> sp) {
                         sp.size() + sizeof(btrfs_stream_header));
 
     struct mkdir_entry {
-        mkdir_entry(const uint8_t* ptr, string_view path, rename_entry2& r) : ptr(ptr), path(path), r(&r) { }
+        mkdir_entry(const uint8_t* ptr, string_view path, rename_entry& r) : ptr(ptr), path(path), r(&r) { }
 
         const uint8_t* ptr;
         string_view path;
-        rename_entry2* r;
+        rename_entry* r;
     };
 
     vector<mkdir_entry> entries;

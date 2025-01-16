@@ -791,27 +791,6 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
     do_wait(ring);
 }
 
-static void do_renames(io_uring& ring, int dirfd, span<const uint8_t> sp) {
-    for (const auto& p : renames) {
-        const auto& r = p.second;
-
-        auto sqe = get_sqe(ring);
-
-        auto ctx = new sqe_ctx;
-
-        ctx->offset = r.ptr - sp.data();
-        ctx->path = string(p.first);
-        ctx->path2 = string(r.path_to);
-
-        io_uring_prep_renameat(sqe, dirfd, ctx->path.c_str(), dirfd,
-                               ctx->path2.c_str(), 0);
-        io_uring_sqe_set_data(sqe, ctx);
-        items_pending++;
-    }
-
-    do_wait(ring);
-}
-
 static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts,
                      uint64_t offset) {
     optional<string> path;
@@ -935,7 +914,6 @@ static void parse(span<const uint8_t> sp) {
         scan(sp);
         create_dirs(ring, dirfd.get(), sp);
         create_files(ring, dirfd.get(), sp);
-        do_renames(ring, dirfd.get(), sp);
         do_writes(ring, dirfd.get(), sp);
     } catch (...) {
         io_uring_queue_exit(&ring);

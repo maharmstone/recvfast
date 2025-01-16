@@ -542,7 +542,8 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts, uint6
 }
 
 static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts, uint64_t offset) {
-    optional<string> path, path_link;
+    optional<string_view> path;
+    optional<string> path_link;
 
     parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
         if constexpr (is_same_v<T, string_view>) {
@@ -558,12 +559,19 @@ static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts, uint
     else if (!path.has_value())
         throw formatted_error("symlink cmd without path_link");
 
+    auto it = renames.find(path.value());
+
+    if (it == renames.end())
+        throw runtime_error("no rename found for symlink");
+
+    auto& r = it->second;
+
     auto sqe = get_sqe(ring);
 
     auto ctx = new sqe_ctx;
 
     ctx->offset = offset;
-    ctx->path.swap(path.value());
+    ctx->path = string(r.path_to);
     ctx->path2.swap(path_link.value());
 
     // FIXME - mode
@@ -571,6 +579,8 @@ static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts, uint
     io_uring_prep_symlinkat(sqe, ctx->path2.c_str(), dirfd, ctx->path.c_str());
     io_uring_sqe_set_data(sqe, ctx);
     items_pending++;
+
+    renames.erase(it);
 }
 
 static void scan(span<const uint8_t> sp) {

@@ -490,7 +490,7 @@ static unsigned get_file_index(io_uring& ring) {
 }
 
 static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts, uint64_t offset) {
-    optional<string> path;
+    optional<string_view> path;
 
     parse_atts(atts, [&]<typename T>(enum btrfs_send_attr attr, const T& v) {
         if constexpr (is_same_v<T, string_view>) {
@@ -502,12 +502,19 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts, uint6
     if (!path.has_value())
         throw formatted_error("mkfile cmd without path");
 
+    auto it = renames.find(path.value());
+
+    if (it == renames.end())
+        throw runtime_error("no rename found for mkfile");
+
+    auto& r = it->second;
+
     auto file_index = get_file_index(ring);
 
     auto ctx = new sqe_ctx;
 
     ctx->offset = offset;
-    ctx->path.swap(path.value());
+    ctx->path = string(r.path_to);
 
     if (sqes_left < 2)
         do_wait(ring);
@@ -530,6 +537,8 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts, uint6
     io_uring_sqe_set_data(sqe, ctx);
 
     items_pending += 2;
+
+    renames.erase(it);
 }
 
 static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts, uint64_t offset) {

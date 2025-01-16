@@ -584,7 +584,7 @@ static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts, uint
     items_pending++;
 }
 
-static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+static void create_dirs(io_uring& ring, int dirfd, span<const uint8_t> sp) {
     auto orig_sp = span(sp.data() - sizeof(btrfs_stream_header),
                         sp.size() + sizeof(btrfs_stream_header));
 
@@ -606,17 +606,6 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
                 do_mkdir(ring, dirfd, atts, sp.data() - orig_sp.data());
                 break;
 
-            case btrfs_send_cmd::MKFILE:
-                do_mkfile(ring, dirfd, atts, sp.data() - orig_sp.data());
-                break;
-
-            case btrfs_send_cmd::SYMLINK:
-                do_symlink(ring, dirfd, atts, sp.data() - orig_sp.data());
-                break;
-
-            case btrfs_send_cmd::RENAME:
-                break;
-
             default:
                 if (verbose) {
                     cout << format("{}, {:x}, {:08x}\n", cmd.cmd, cmd.len, cmd.crc);
@@ -636,6 +625,42 @@ static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
                     });
                 }
 
+                break;
+        }
+
+        sp = sp.subspan(cmd.len + sizeof(btrfs_cmd_header));
+    }
+
+    do_wait(ring);
+}
+
+static void create_files(io_uring& ring, int dirfd, span<const uint8_t> sp) {
+    auto orig_sp = span(sp.data() - sizeof(btrfs_stream_header),
+                        sp.size() + sizeof(btrfs_stream_header));
+
+    while (!sp.empty()) {
+        if (sp.size() < sizeof(btrfs_cmd_header))
+            throw runtime_error("Command exceeding bounds of file.");
+
+        const auto& cmd = *(btrfs_cmd_header*)sp.data();
+
+        // FIXME - check CRC?
+
+        if (sp.size() < cmd.len + sizeof(btrfs_cmd_header))
+            throw runtime_error("Command exceeding bounds of file.");
+
+        auto atts = span(sp.data() + sizeof(btrfs_cmd_header), cmd.len);
+
+        switch (cmd.cmd) {
+            case btrfs_send_cmd::MKFILE:
+                do_mkfile(ring, dirfd, atts, sp.data() - orig_sp.data());
+                break;
+
+            case btrfs_send_cmd::SYMLINK:
+                do_symlink(ring, dirfd, atts, sp.data() - orig_sp.data());
+                break;
+
+            default:
                 break;
         }
 
@@ -859,6 +884,7 @@ static void parse(span<const uint8_t> sp) {
         if (auto ret = io_uring_register_files(&ring, files.data(), files.size()); ret)
             throw formatted_error("io_uring_register_files failed: {}", ret);
 
+        create_dirs(ring, dirfd.get(), sp);
         create_files(ring, dirfd.get(), sp);
         do_renames(ring, dirfd.get(), sp);
         do_writes(ring, dirfd.get(), sp);

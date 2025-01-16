@@ -11,6 +11,7 @@
 #include <array>
 #include <map>
 #include <liburing.h>
+#include <unistd.h>
 #include "unique_fd.h"
 
 using namespace std;
@@ -27,6 +28,7 @@ static unsigned int next_file_index = 0;
 static unsigned int sqes_left = QUEUE_DEPTH;
 
 static bool verbose = false;
+static bool no_uring = false;
 
 struct btrfs_stream_header {
     char magic[sizeof(BTRFS_SEND_STREAM_MAGIC)];
@@ -509,34 +511,45 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts, uint6
 
     auto& r = it->second;
 
-    auto file_index = get_file_index(ring);
+    if (no_uring) {
+        auto path = string(r.path_to);
 
-    auto ctx = new sqe_ctx;
+        auto fd = openat(dirfd, path.c_str(), O_CREAT | O_EXCL, 0644);
+        if (fd < 0)
+            throw formatted_error("openat failed: {}", errno);
 
-    ctx->offset = offset;
-    ctx->path = string(r.path_to);
+        if (auto ret = close(fd); ret)
+            throw formatted_error("close failed: {}", errno);
+    } else {
+        auto file_index = get_file_index(ring);
 
-    if (sqes_left < 2)
-        do_wait(ring);
+        auto ctx = new sqe_ctx;
 
-    auto sqe = get_sqe(ring);
+        ctx->offset = offset;
+        ctx->path = string(r.path_to);
 
-    // FIXME - mode
+        if (sqes_left < 2)
+            do_wait(ring);
 
-    io_uring_prep_openat_direct(sqe, dirfd, ctx->path.c_str(),
-                                O_CREAT | O_EXCL, 0644, file_index);
-    io_uring_sqe_set_data(sqe, ctx);
-    sqe->flags |= IOSQE_IO_LINK;
+        auto sqe = get_sqe(ring);
 
-    sqe = get_sqe(ring);
+        // FIXME - mode
 
-    ctx = new sqe_ctx;
-    ctx->offset = offset;
+        io_uring_prep_openat_direct(sqe, dirfd, ctx->path.c_str(),
+                                    O_CREAT | O_EXCL, 0644, file_index);
+        io_uring_sqe_set_data(sqe, ctx);
+        sqe->flags |= IOSQE_IO_LINK;
 
-    io_uring_prep_close_direct(sqe, file_index);
-    io_uring_sqe_set_data(sqe, ctx);
+        sqe = get_sqe(ring);
 
-    items_pending += 2;
+        ctx = new sqe_ctx;
+        ctx->offset = offset;
+
+        io_uring_prep_close_direct(sqe, file_index);
+        io_uring_sqe_set_data(sqe, ctx);
+
+        items_pending += 2;
+    }
 
     renames.erase(it);
 }
@@ -566,19 +579,26 @@ static void do_symlink(io_uring& ring, int dirfd, span<const uint8_t> atts, uint
 
     auto& r = it->second;
 
-    auto sqe = get_sqe(ring);
+    if (no_uring) {
+        auto path = string(r.path_to);
 
-    auto ctx = new sqe_ctx;
+        if (auto ret = symlinkat(path_link.value().c_str(), dirfd, path.c_str()); ret)
+            throw formatted_error("symlinkat failed: {}", errno);
+    } else {
+        auto sqe = get_sqe(ring);
 
-    ctx->offset = offset;
-    ctx->path = string(r.path_to);
-    ctx->path2.swap(path_link.value());
+        auto ctx = new sqe_ctx;
 
-    // FIXME - mode
+        ctx->offset = offset;
+        ctx->path = string(r.path_to);
+        ctx->path2.swap(path_link.value());
 
-    io_uring_prep_symlinkat(sqe, ctx->path2.c_str(), dirfd, ctx->path.c_str());
-    io_uring_sqe_set_data(sqe, ctx);
-    items_pending++;
+        // FIXME - mode
+
+        io_uring_prep_symlinkat(sqe, ctx->path2.c_str(), dirfd, ctx->path.c_str());
+        io_uring_sqe_set_data(sqe, ctx);
+        items_pending++;
+    }
 
     renames.erase(it);
 }
@@ -732,24 +752,29 @@ static void create_dirs(io_uring& ring, int dirfd, span<const uint8_t> sp) {
     for (const auto& e : entries) {
         auto path = string(e.r->path_to);
 
-        auto ctx = new sqe_ctx;
+        if (no_uring) {
+            if (auto ret = mkdirat(dirfd, path.c_str(), 0755); ret)
+                throw formatted_error("mkdirat failed: {}", errno);
+        } else {
+            auto ctx = new sqe_ctx;
 
-        ctx->offset = e.ptr - orig_sp.data();
-        ctx->path.swap(path);
+            ctx->offset = e.ptr - orig_sp.data();
+            ctx->path.swap(path);
 
-        if (e.r->slashes > last_slashes) {
-            do_wait(ring);
-            last_slashes = e.r->slashes;
+            if (e.r->slashes > last_slashes) {
+                do_wait(ring);
+                last_slashes = e.r->slashes;
+            }
+
+            auto sqe = get_sqe(ring);
+
+            // FIXME - mode
+
+            io_uring_prep_mkdirat(sqe, dirfd, ctx->path.c_str(), 0755);
+            io_uring_sqe_set_data(sqe, ctx);
+
+            items_pending++;
         }
-
-        auto sqe = get_sqe(ring);
-
-        // FIXME - mode
-
-        io_uring_prep_mkdirat(sqe, dirfd, ctx->path.c_str(), 0755);
-        io_uring_sqe_set_data(sqe, ctx);
-
-        items_pending++;
 
         renames.erase(renames.find(e.path));
     }
@@ -956,7 +981,7 @@ static void process(const filesystem::path& fn) {
 }
 
 static void show_usage() {
-    cerr << "Usage: recvfast [-v|--verbose] <stream>" << endl;
+    cerr << "Usage: recvfast [-v|--verbose] [-n|--no-uring] <stream>" << endl;
 }
 
 int main(int argc, char** argv) {
@@ -964,6 +989,7 @@ int main(int argc, char** argv) {
 
     static const option longopts[] = {
         {"verbose", no_argument, nullptr, 'v'},
+        {"no-uring", no_argument, nullptr, 'n'},
         {nullptr, 0, nullptr, 0}
     };
 
@@ -976,6 +1002,10 @@ int main(int argc, char** argv) {
         switch (c) {
             case 'v':
                 verbose = true;
+            break;
+
+            case 'n':
+                no_uring = true;
             break;
 
             default:

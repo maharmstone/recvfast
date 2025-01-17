@@ -516,7 +516,7 @@ static void do_mkfile(io_uring& ring, int dirfd, span<const uint8_t> atts, uint6
 
         auto fd = openat(dirfd, path.c_str(), O_CREAT | O_EXCL, 0644);
         if (fd < 0)
-            throw formatted_error("openat failed: {}", errno);
+            throw formatted_error("openat failed for {}: {}", path, errno);
 
         if (auto ret = close(fd); ret)
             throw formatted_error("close failed: {}", errno);
@@ -852,7 +852,7 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts,
 
         auto fd = openat(dirfd, pathstr.c_str(), O_WRONLY, 0);
         if (fd < 0)
-            throw formatted_error("openat failed: {}", errno);
+            throw formatted_error("openat failed for {}: {}", pathstr, errno);
 
         if (auto ret = pwrite(fd, data.value().data(), data.value().size(), file_offset.value()); ret < 0)
             throw formatted_error("pwrite failed: {}", errno);

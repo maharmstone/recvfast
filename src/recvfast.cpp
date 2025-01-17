@@ -856,6 +856,9 @@ static void do_write(io_uring& ring, int dirfd, span<const uint8_t> atts,
 
         if (auto ret = pwrite(fd, data.value().data(), data.value().size(), file_offset.value()); ret < 0)
             throw formatted_error("pwrite failed: {}", errno);
+
+        if (auto ret = close(fd); ret)
+            throw formatted_error("close failed: {}", errno);
     } else {
         auto file_index = get_file_index(ring);
 
